@@ -1,7 +1,7 @@
 {
   "name": "lakar",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Lakar \u2014 a hand-drawn whiteboard with end-to-end encrypted cloud sync",
   "workspaces": [
     "client",

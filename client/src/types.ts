@@ -46,6 +46,7 @@ export interface BaseElement {
   version: number;
   versionNonce: number;
   isDeleted: boolean;
+  deletedAt?: number;
   groupIds: string[];
   frameId?: string | null;
   link?: string | null;
@@ -241,6 +242,7 @@ export interface CollabPeer {
   color: string;
   isSelf: boolean;
   joinedAt: number;
+  away: boolean;
 }
 
 export interface PeerPointer {
@@ -252,6 +254,16 @@ export interface PeerPointer {
   tool: ToolType;
   selectedIds: string[];
   updatedAt: number;
+  away: boolean;
+}
+
+export interface RoomResume {
+  roomId: string;
+  secret: string | null;
+  mode: RoomMode;
+  ownerToken: string | null;
+  title: string;
+  leftAt: number;
 }
 
 export interface CollabState {

@@ -5,7 +5,7 @@ const listeners = new Set<() => void>();
 let snapshot: PeerPointer[] = [];
 let notifyScheduled = 0;
 
-const STALE_MS = 25_000;
+export const IDLE_MS = 25_000;
 
 const rebuild = () => {
   snapshot = [...pointers.values()];
@@ -37,7 +37,7 @@ export const presence = {
   patch(id: string, patch: Partial<PeerPointer>) {
     const existing = pointers.get(id);
     if (!existing) return;
-    pointers.set(id, { ...existing, ...patch, updatedAt: Date.now() });
+    pointers.set(id, { ...existing, ...patch });
     notify();
   },
   remove(id: string) {
@@ -48,14 +48,12 @@ export const presence = {
     pointers.clear();
     notify();
   },
-  pruneStale() {
-    const cutoff = Date.now() - STALE_MS;
+  prune(liveIds: ReadonlySet<string>) {
     let dropped = false;
-    for (const [id, pointer] of pointers) {
-      if (pointer.updatedAt < cutoff) {
-        pointers.delete(id);
-        dropped = true;
-      }
+    for (const id of pointers.keys()) {
+      if (liveIds.has(id)) continue;
+      pointers.delete(id);
+      dropped = true;
     }
     if (dropped) notify();
   },

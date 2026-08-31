@@ -25,6 +25,7 @@ export const TopRight = () => {
   const setDialog = useStore((s) => s.setDialog);
   const syncStatus = useStore((s) => s.syncStatus);
   const collabState = useStore((s) => s.collab);
+  const sharedRooms = useStore((s) => s.sharedRooms);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -57,9 +58,15 @@ export const TopRight = () => {
             {collabState.peers.slice(0, 4).map((p) => (
               <span
                 key={p.id}
-                className="peer-avatar"
+                className={`peer-avatar ${p.away ? "away" : ""}`}
                 style={{ background: p.color }}
-                title={p.isSelf ? `${p.name} (you)` : p.name}
+                title={
+                  p.isSelf
+                    ? `${p.name} (you)${p.away ? " — away" : ""}`
+                    : p.away
+                      ? `${p.name} — away in another tab or window`
+                      : p.name
+                }
               >
                 {initials(p.name)}
               </span>
@@ -81,12 +88,12 @@ export const TopRight = () => {
           Share
         </button>
       )}
-      {user && (
+      {(user || sharedRooms.length > 0) && (
         <button
           className="island icon-btn"
           style={{ width: 40, height: 40 }}
-          title="Your scenes"
-          aria-label="Your scenes"
+          title={user ? "Your scenes" : "Shared canvases"}
+          aria-label={user ? "Your scenes" : "Shared canvases"}
           onClick={() => setDialog("scenes")}
         >
           <FolderClosed size={18} />

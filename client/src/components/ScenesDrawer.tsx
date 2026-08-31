@@ -9,11 +9,13 @@ import {
   X,
 } from "lucide-react";
 import { useStore } from "../store";
-import type { SceneMeta } from "../types";
+import type { RoomResume, SceneMeta } from "../types";
 import { syncManager } from "../sync/manager";
+import { collab, CollabError } from "../collab/manager";
+import { ApiError } from "../sync/api";
 
 const guardLive = (targetSceneId: string | "new" | null): boolean => {
-  if (!syncManager.inRoomScene()) return false;
+  if (!collab.isLive()) return false;
   syncManager.queueSceneAfterRoom(targetSceneId);
   useStore.getState().setDialog("leave-live-confirm");
   return true;
@@ -37,6 +39,10 @@ export const ScenesDrawer = () => {
   const scenes = useStore((s) => s.scenes);
   const folders = useStore((s) => s.folders);
   const sceneId = useStore((s) => s.sceneId);
+  const user = useStore((s) => s.user);
+  const sharedRooms = useStore((s) => s.sharedRooms);
+  const liveRoomId = useStore((s) => s.collab.roomId);
+  const liveStatus = useStore((s) => s.collab.status);
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
@@ -45,6 +51,10 @@ export const ScenesDrawer = () => {
 
   const close = () => setDialog(null);
   const q = search.trim().toLowerCase();
+  const currentRoomId = syncManager.currentRoomSceneId();
+  const shared = sharedRooms.filter(
+    (r) => !q || r.title.toLowerCase().includes(q),
+  );
   const filtered = q
     ? scenes.filter((sc) => sc.title.toLowerCase().includes(q))
     : scenes;
@@ -81,20 +91,38 @@ export const ScenesDrawer = () => {
       <div className="drawer-backdrop" onPointerDown={close} />
       <aside className="drawer" aria-label="Your scenes">
         <div className="drawer-header">
-          <h2>Your scenes</h2>
+          <h2>{user ? "Your scenes" : "Shared canvases"}</h2>
           <button className="icon-btn" onClick={close} aria-label="Close scenes">
             <X size={17} />
           </button>
         </div>
         <input
           className="drawer-search"
-          placeholder="Search scenes…"
+          placeholder={user ? "Search scenes…" : "Search shared canvases…"}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => e.stopPropagation()}
         />
         <div className="drawer-list">
-          {scenes.length === 0 && (
+          {shared.length > 0 && (
+            <div className="drawer-section">
+              <div className="drawer-section-head">Shared canvases</div>
+              {shared.map((room) => (
+                <SharedRow
+                  key={room.roomId}
+                  room={room}
+                  live={
+                    liveRoomId === room.roomId &&
+                    liveStatus !== "idle" &&
+                    liveStatus !== "ended"
+                  }
+                  current={currentRoomId === room.roomId}
+                  onOpen={close}
+                />
+              ))}
+            </div>
+          )}
+          {user && scenes.length === 0 && (
             <div className="drawer-empty">
               <span className="hand">Nothing here yet</span>
               Create a scene and it syncs to your server, encrypted before it
@@ -130,16 +158,156 @@ export const ScenesDrawer = () => {
             );
           })}
         </div>
-        <div className="drawer-footer">
-          <button className="btn btn-primary" style={{ flex: 1 }} onClick={newScene}>
-            <FilePlus2 size={15} /> New scene
-          </button>
-          <button className="btn btn-outline" onClick={newFolder}>
-            <FolderPlus size={15} /> Folder
-          </button>
-        </div>
+        {user && (
+          <div className="drawer-footer">
+            <button className="btn btn-primary" style={{ flex: 1 }} onClick={newScene}>
+              <FilePlus2 size={15} /> New scene
+            </button>
+            <button className="btn btn-outline" onClick={newFolder}>
+              <FolderPlus size={15} /> Folder
+            </button>
+          </div>
+        )}
       </aside>
     </>
+  );
+};
+
+const SharedRow = ({
+  room,
+  live,
+  current,
+  onOpen,
+}: {
+  room: RoomResume;
+  live: boolean;
+  current: boolean;
+  onOpen: () => void;
+}) => {
+  const setDialog = useStore((s) => s.setDialog);
+  const setPendingRoomId = useStore((s) => s.setPendingRoomId);
+  const toast = useStore((s) => s.toast);
+  const sceneTitle = useStore((s) => s.sceneTitle);
+  const [busy, setBusy] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [menuOpen]);
+
+  const enter = () => {
+    if (busy) return;
+    if (live && current) {
+      onOpen();
+      return;
+    }
+    if (room.mode === "password") {
+      setPendingRoomId(room.roomId);
+      setDialog("join");
+      return;
+    }
+    setBusy(true);
+    void collab
+      .rejoin(room)
+      .then(onOpen)
+      .catch((err) =>
+        toast(
+          err instanceof CollabError || err instanceof ApiError
+            ? err.message
+            : "Could not rejoin that session",
+          "error",
+        ),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div style={{ position: "relative" }} ref={menuRef}>
+      <div
+        className={`scene-row ${current ? "current" : ""}`}
+        role="button"
+        tabIndex={0}
+        onClick={enter}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") enter();
+        }}
+      >
+        <span className={`shared-dot ${live ? "live" : ""}`} />
+        <div className="scene-row-body">
+          <div className="scene-row-title">
+            {current ? sceneTitle : room.title}
+          </div>
+          <div className="scene-row-meta">
+            {busy
+              ? "rejoining…"
+              : live
+                ? "live now"
+                : current
+                  ? "not connected — click to rejoin"
+                  : `left ${timeAgo(room.leftAt)}`}
+          </div>
+        </div>
+        <button
+          className="icon-btn kebab"
+          data-open={menuOpen}
+          aria-label={`Options for ${room.title}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            setMenuOpen(!menuOpen);
+          }}
+        >
+          <MoreHorizontal size={15} />
+        </button>
+      </div>
+      {menuOpen && (
+        <div className="menu-pop" style={{ right: 4, top: "100%" }}>
+          {current && (
+            <button
+              className="menu-item"
+              onClick={() => {
+                setMenuOpen(false);
+                setDialog("keep-collab-copy");
+              }}
+            >
+              Save a separate copy…
+            </button>
+          )}
+          {live && (
+            <button
+              className="menu-item"
+              onClick={() => {
+                setMenuOpen(false);
+                setDialog("share");
+              }}
+            >
+              Session details…
+            </button>
+          )}
+          <div className="menu-sep" />
+          <button
+            className="menu-item danger"
+            disabled={live}
+            title={live ? "Leave the session before removing it" : undefined}
+            onClick={() => {
+              setMenuOpen(false);
+              void collab.forgetSavedSession(room.roomId).then(() => {
+                toast("Removed that shared canvas from this device", "info");
+              });
+            }}
+          >
+            Remove from this device
+          </button>
+        </div>
+      )}
+    </div>
   );
 };
 

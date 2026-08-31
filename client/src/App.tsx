@@ -17,6 +17,7 @@ import { Dialogs } from "./components/Dialogs";
 import { ScenesDrawer } from "./components/ScenesDrawer";
 import { EmptyHint } from "./components/EmptyHint";
 import { useKeyboard } from "./hooks/useKeyboard";
+import { useTransfer } from "./hooks/useTransfer";
 import { syncManager } from "./sync/manager";
 import { SatchelPanel } from "./components/SatchelPanel";
 import { parseRoomHash } from "./crypto/room";
@@ -41,6 +42,7 @@ export const App = () => {
   const presenting = useStore((s) => s.presenting);
   const viewerMode = useStore((s) => s.viewerMode);
   useKeyboard();
+  useTransfer();
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -69,6 +71,7 @@ export const App = () => {
       const inviteCode = takeInviteFromHash(window.location.hash);
       void syncManager.init().then(() => {
         void satchel.init();
+        void collab.savedSessions().catch(() => undefined);
         if (invite) offerInvite(invite.roomId);
         else if (inviteCode) offerInviteCode(inviteCode);
       });

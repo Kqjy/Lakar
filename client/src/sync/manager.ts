@@ -43,6 +43,8 @@ import {
   saveGuestDoc,
   saveRemoteCache,
   saveRoomDoc,
+  loadRoomDoc,
+  loadRoomResume,
   deleteRoomDoc,
   saveSceneDoc,
   deleteSceneDoc,
@@ -195,11 +197,11 @@ class SyncManager {
     history.reset();
   }
 
-  private applyDocument(doc: SceneDocument) {
+  private applyDocument(doc: SceneDocument, keepDeleted = false) {
     const s = useStore.getState();
     clearShapeCache();
     try {
-      const parsed = parseSceneFile(JSON.stringify(doc));
+      const parsed = parseSceneFile(JSON.stringify(doc), keepDeleted);
       s.replaceElements(parsed.elements);
       s.setCanvasBg(parsed.canvasBg);
     } catch {
@@ -319,7 +321,7 @@ class SyncManager {
   async openScene(id: string) {
     const s = useStore.getState();
     if (s.sceneId === id) return;
-    await this.flushNow();
+    if (!(await this.releaseRoomScene())) await this.flushNow();
     const meta = s.scenes.find((sc) => sc.id === id);
     if (!meta) return;
     const cached = await loadSceneDoc(id);
@@ -385,7 +387,7 @@ class SyncManager {
     if (this.roomSceneId) {
       await saveRoomDoc(
         this.roomSceneId,
-        serializeScene(s.elements, s.canvasBg, s.sceneTitle),
+        serializeScene(s.elements, s.canvasBg, s.sceneTitle, true),
       );
       return;
     }
@@ -894,7 +896,7 @@ class SyncManager {
       };
       s.setScenes([meta, ...s.scenes]);
       if (open) {
-        await this.flushNow();
+        if (!(await this.releaseRoomScene())) await this.flushNow();
         this.applyDocument(emptyDoc);
         s.setScene(res.id, title);
         history.reset();
@@ -1129,21 +1131,55 @@ class SyncManager {
     return !!this.roomSceneId;
   }
 
+  currentRoomSceneId() {
+    return this.roomSceneId;
+  }
+
   queueSceneAfterRoom(id: string | "new" | null) {
     this.nextSceneAfterRoom = id;
   }
 
   async enterRoomScene(roomId: string, title: string) {
     const s = useStore.getState();
+    if (this.roomSceneId === roomId) {
+      s.setScene(null, title);
+      return;
+    }
     await this.flushNow();
-    this.beforeRoomSceneId = s.sceneId;
+    if (!this.roomSceneId) this.beforeRoomSceneId = s.sceneId;
     this.roomSceneId = roomId;
     s.setScene(null, title);
   }
 
+  async loadRoomSceneDoc(roomId: string): Promise<boolean> {
+    const doc = await loadRoomDoc(roomId);
+    if (!doc) return false;
+    this.applyDocument(doc, true);
+    history.reset();
+    return true;
+  }
+
+  hasQueuedSceneAfterRoom() {
+    return this.nextSceneAfterRoom !== null;
+  }
+
+  async releaseRoomScene(): Promise<boolean> {
+    if (!this.roomSceneId) return false;
+    await this.flushNow();
+    if (!(await loadRoomResume(this.roomSceneId))) {
+      await deleteRoomDoc(this.roomSceneId);
+    }
+    this.roomSceneId = null;
+    this.beforeRoomSceneId = null;
+    this.nextSceneAfterRoom = null;
+    return true;
+  }
+
   async exitRoomScene() {
     const s = useStore.getState();
-    if (this.roomSceneId) await deleteRoomDoc(this.roomSceneId);
+    if (this.roomSceneId && !(await loadRoomResume(this.roomSceneId))) {
+      await deleteRoomDoc(this.roomSceneId);
+    }
     const queued = this.nextSceneAfterRoom;
     const previous =
       queued && queued !== "new" && s.scenes.some((sc) => sc.id === queued)

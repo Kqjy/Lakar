@@ -18,6 +18,14 @@ import {
   type RoomKeys,
 } from "../crypto/room";
 import { api, ApiError } from "../sync/api";
+import {
+  deleteRoomResume,
+  loadRoomResume,
+  loadRoomResumes,
+  pruneRoomResumes,
+  saveRoomResume,
+  type RoomResume,
+} from "../sync/local";
 import { syncManager } from "../sync/manager";
 import { presence } from "./presence";
 import { diffSince, mergeFullScene, mergeIncoming } from "./reconcile";
@@ -46,10 +54,19 @@ const MAX_INBOUND_MESSAGES = 16;
 const MAX_CHUNK_ID = 64;
 const MAX_SNAPSHOT_CHARS = 12 * 1024 * 1024;
 const PRESENCE_SWEEP = 8000;
+const FOCUS_DEBOUNCE = 500;
+const RENAME_DEBOUNCE = 400;
 const RECONNECT_DELAYS = [800, 1600, 3200, 6000, 10_000];
 
 type Wire =
-  | { k: "hello"; name: string; color: string; joinedAt: number }
+  | {
+      k: "hello";
+      name: string;
+      color: string;
+      joinedAt: number;
+      away?: boolean;
+    }
+  | { k: "focus"; away: boolean }
   | {
       k: "pointer";
       x: number;
@@ -172,6 +189,12 @@ class CollabManager {
   private snapshotWarned = false;
   private regResend = false;
   private sceneWarned = false;
+  private away = false;
+  private seededFromLocal = false;
+  private lastRoomId: string | null = null;
+  private focusTimer: number | null = null;
+  private renameTimer: number | null = null;
+  private detachFocus: (() => void) | null = null;
 
   isLive() {
     return this.socket?.readyState === WebSocket.OPEN && !!this.roomId;
@@ -218,14 +241,22 @@ class CollabManager {
     try {
       await this.connect();
     } catch (err) {
-      await this.abortConnect(true);
+      await this.abortConnect(true, true);
       throw err;
     }
     writeRoomHash(roomId, secret);
+    await this.rememberRoom();
     this.queueSnapshot(0);
   }
 
-  private async abortConnect(restoreScene: boolean) {
+  private async abortConnect(restoreScene: boolean, discardRoom = false) {
+    if (discardRoom && this.roomId && this.ownerToken) {
+      try {
+        await api.endRoom(this.roomId, this.ownerToken);
+      } catch {
+        void 0;
+      }
+    }
     this.intentionalClose = true;
     this.socket?.close();
     this.socket = null;
@@ -251,31 +282,36 @@ class CollabManager {
       info.mode === "password"
         ? await keysFromPassword(roomId, password)
         : await keysFromSecret(secret ?? "");
+    const resume = await loadRoomResume(roomId);
     this.keys = keys;
     this.roomId = roomId;
     this.secret = info.mode === "password" ? null : secret;
     this.mode = info.mode;
-    this.ownerToken = null;
-    this.isHost = false;
+    this.ownerToken = resume?.ownerToken ?? null;
+    this.isHost = !!resume?.ownerToken;
 
     const s = useStore.getState();
     s.setCollab({
       status: "connecting",
       roomId,
       mode: info.mode,
-      isHost: false,
+      isHost: this.isHost,
       peers: [],
       shareLink: buildRoomLink(roomId, this.secret),
     });
 
-    await syncManager.enterRoomScene(roomId, "Shared canvas");
-    s.replaceElements([]);
-    s.setCanvasBg(DEFAULT_CANVAS_BG);
+    await syncManager.enterRoomScene(roomId, resume?.title || "Shared canvas");
+    const seeded = resume ? await syncManager.loadRoomSceneDoc(roomId) : false;
+    if (!seeded) {
+      s.replaceElements([]);
+      s.setCanvasBg(DEFAULT_CANVAS_BG);
+    }
     s.clearSelection();
     clearShapeCache();
     history.reset();
     this.resetOutbound();
     this.sceneReady = false;
+    this.seededFromLocal = seeded;
 
     try {
       await this.connect();
@@ -284,11 +320,94 @@ class CollabManager {
       throw err;
     }
     writeRoomHash(roomId, this.secret);
+    await this.rememberRoom();
 
     if (info.peers === 0) {
-      this.sceneReady = await this.loadServerSnapshot();
+      const fromServer = await this.loadServerSnapshot();
+      this.sceneReady = fromServer || seeded;
+      if (fromServer) await this.rememberRoom();
       if (!this.sceneReady) this.warnSceneUnavailable();
     }
+  }
+
+  async rejoin(resume: RoomResume): Promise<void> {
+    if (this.roomId && this.roomId !== resume.roomId) {
+      await this.leave({ silent: true });
+    }
+    try {
+      await this.join(resume.roomId, resume.secret, "");
+    } catch (err) {
+      const gone =
+        (err instanceof ApiError && err.status === 404) ||
+        (err instanceof CollabError && err.code === "no-room");
+      if (gone) {
+        await this.forgetRoom(resume.roomId);
+        throw new CollabError(
+          "no-room",
+          "That session has ended — it has been removed from your shared canvases",
+        );
+      }
+      throw err;
+    }
+  }
+
+  async savedSessions(): Promise<RoomResume[]> {
+    await pruneRoomResumes(this.roomId ?? syncManager.currentRoomSceneId());
+    return this.refreshSavedSessions();
+  }
+
+  private async refreshSavedSessions(): Promise<RoomResume[]> {
+    const rooms = await loadRoomResumes();
+    useStore.getState().setSharedRooms(rooms);
+    return rooms;
+  }
+
+  resumableRoomId() {
+    return this.lastRoomId;
+  }
+
+  private async rememberRoom() {
+    const roomId = this.roomId;
+    if (!roomId) return;
+    this.lastRoomId = roomId;
+    try {
+      await syncManager.flushNow();
+    } catch {
+      void 0;
+    }
+    try {
+      const existing = await loadRoomResume(roomId);
+      await saveRoomResume({
+        roomId,
+        secret: this.mode === "password" ? null : this.secret,
+        mode: this.mode,
+        ownerToken: this.ownerToken ?? existing?.ownerToken ?? null,
+        title:
+          useStore.getState().sceneTitle.trim().slice(0, 120) ||
+          existing?.title ||
+          "Shared canvas",
+        leftAt:
+          this.sceneReady || !existing ? Date.now() : existing.leftAt,
+      });
+    } catch {
+      this.lastRoomId = null;
+    }
+    await this.refreshSavedSessions();
+  }
+
+  private async forgetRoom(roomId: string | null) {
+    if (!roomId) return;
+    if (this.lastRoomId === roomId) this.lastRoomId = null;
+    try {
+      await deleteRoomResume(roomId);
+    } catch {
+      void 0;
+    }
+    await this.refreshSavedSessions();
+  }
+
+  async forgetSavedSession(roomId: string) {
+    await this.forgetRoom(roomId);
   }
 
   private resetOutbound() {
@@ -389,6 +508,7 @@ class CollabManager {
 
   private onJoined(message: { id: string; peers: string[] }) {
     this.selfId = message.id;
+    this.attachFocusWatcher();
     const s = useStore.getState();
     const self: CollabPeer = {
       id: message.id,
@@ -396,6 +516,7 @@ class CollabManager {
       color: colorFor(message.id),
       isSelf: true,
       joinedAt: Date.now(),
+      away: this.away,
     };
     this.peerMeta.set(message.id, self);
     for (const id of message.peers) {
@@ -406,6 +527,7 @@ class CollabManager {
         color: colorFor(id),
         isSelf: false,
         joinedAt: Date.now(),
+        away: false,
       });
     }
     s.setCollab({ status: "live", peers: this.peerList() });
@@ -430,7 +552,7 @@ class CollabManager {
     if (!next) {
       void this.loadServerSnapshot().then((ok) => {
         if (this.sceneReady || !this.isLive()) return;
-        if (ok) {
+        if (ok || this.seededFromLocal) {
           this.sceneReady = true;
           return;
         }
@@ -465,6 +587,7 @@ class CollabManager {
       name: s.displayName.slice(0, 40),
       color: colorFor(this.selfId ?? "self"),
       joinedAt: Date.now(),
+      away: this.away,
     };
   }
 
@@ -615,6 +738,12 @@ class CollabManager {
           color: payload.color || colorFor(from),
           isSelf: false,
           joinedAt: existing?.joinedAt ?? payload.joinedAt ?? Date.now(),
+          away: payload.away === true,
+        });
+        presence.patch(from, {
+          away: payload.away === true,
+          name: (payload.name || "Guest").slice(0, 40),
+          color: payload.color || colorFor(from),
         });
         s.setCollab({ peers: this.peerList() });
         if (!this.sceneReady && !this.askTimer) this.askScene();
@@ -631,7 +760,18 @@ class CollabManager {
           tool: payload.tool,
           selectedIds: payload.selectedIds ?? [],
           updatedAt: Date.now(),
+          away: meta?.away ?? false,
         });
+        break;
+      }
+      case "focus": {
+        const meta = this.peerMeta.get(from);
+        if (!meta) break;
+        const away = payload.away === true;
+        if (meta.away === away) break;
+        this.peerMeta.set(from, { ...meta, away });
+        presence.patch(from, { away });
+        s.setCollab({ peers: this.peerList() });
         break;
       }
       case "update": {
@@ -668,6 +808,8 @@ class CollabManager {
         this.sceneReady = true;
         this.sceneWarned = false;
         this.applyRemoteScene(payload.elements, payload.canvasBg, payload.title);
+        this.queueBroadcast();
+        void this.rememberRoom();
         break;
       }
       case "bye": {
@@ -788,7 +930,7 @@ class CollabManager {
     try {
       const snapshot = await api.getRoomSnapshot(this.roomId, this.keys.verifier);
       const plain = await decryptString(this.keys.key, snapshot.encData);
-      const parsed = parseSceneFile(plain);
+      const parsed = parseSceneFile(plain, true);
       this.applyRemoteScene(parsed.elements, parsed.canvasBg, parsed.title);
       return true;
     } catch (err) {
@@ -801,6 +943,7 @@ class CollabManager {
     let lastNonce = useStore.getState().sceneNonce;
     let lastBg = useStore.getState().canvasBg;
     let lastTitle = useStore.getState().sceneTitle;
+    let lastName = useStore.getState().displayName;
     this.unsubscribeStore = useStore.subscribe((state) => {
       if (
         state.sceneNonce !== lastNonce ||
@@ -813,7 +956,30 @@ class CollabManager {
         this.queueBroadcast();
         this.queueSnapshot(SNAPSHOT_DEBOUNCE);
       }
+      if (state.displayName !== lastName) {
+        lastName = state.displayName;
+        this.queueRename();
+      }
     });
+  }
+
+  private queueRename() {
+    if (this.renameTimer) window.clearTimeout(this.renameTimer);
+    this.renameTimer = window.setTimeout(() => {
+      this.renameTimer = null;
+      this.publishName();
+    }, RENAME_DEBOUNCE);
+  }
+
+  private publishName() {
+    if (!this.selfId) return;
+    const name = useStore.getState().displayName.slice(0, 40) || "Guest";
+    const self = this.peerMeta.get(this.selfId);
+    if (self && self.name !== name) {
+      this.peerMeta.set(this.selfId, { ...self, name });
+      useStore.getState().setCollab({ peers: this.peerList() });
+    }
+    void this.sendWire(this.helloPayload());
   }
 
   private queueBroadcast() {
@@ -829,8 +995,9 @@ class CollabManager {
     const s = useStore.getState();
     const changed = diffSince(s.elements, this.sentVersions);
     const title = s.sceneTitle.trim().slice(0, 120);
-    const bgChanged = s.canvasBg !== this.bgReg?.text;
-    const titleChanged = !!title && title !== this.titleReg?.text;
+    const bgChanged = this.sceneReady && s.canvasBg !== this.bgReg?.text;
+    const titleChanged =
+      this.sceneReady && !!title && title !== this.titleReg?.text;
     const resend = this.regResend;
     this.regResend = false;
     if (!changed.length && !bgChanged && !titleChanged && !resend) return;
@@ -892,15 +1059,19 @@ class CollabManager {
     if (!this.isLive() || !this.roomId || !this.keys) return;
     if (!this.sceneReady) return;
     if (!this.isSnapshotLeader()) return;
+    const roomId = this.roomId;
+    const keys = this.keys;
+    const generation = this.generation;
     const s = useStore.getState();
     try {
-      const doc = serializeScene(s.elements, s.canvasBg, s.sceneTitle);
-      const encData = await encryptString(this.keys.key, JSON.stringify(doc));
+      const doc = serializeScene(s.elements, s.canvasBg, s.sceneTitle, true);
+      const encData = await encryptString(keys.key, JSON.stringify(doc));
+      if (this.generation !== generation || this.roomId !== roomId) return;
       if (encData.length > MAX_SNAPSHOT_CHARS) {
         this.warnSnapshotTooBig();
         return;
       }
-      await api.putRoomSnapshot(this.roomId, this.keys.verifier, encData);
+      await api.putRoomSnapshot(roomId, keys.verifier, encData);
       this.snapshotWarned = false;
     } catch (err) {
       if (err instanceof ApiError && err.status === 400) {
@@ -920,10 +1091,40 @@ class CollabManager {
       );
   }
 
+  private attachFocusWatcher() {
+    if (this.detachFocus) return;
+    const evaluate = () => {
+      if (this.focusTimer) window.clearTimeout(this.focusTimer);
+      this.focusTimer = window.setTimeout(() => {
+        this.focusTimer = null;
+        this.setAway(document.hidden || !document.hasFocus());
+      }, FOCUS_DEBOUNCE);
+    };
+    document.addEventListener("visibilitychange", evaluate);
+    window.addEventListener("blur", evaluate);
+    window.addEventListener("focus", evaluate);
+    this.detachFocus = () => {
+      document.removeEventListener("visibilitychange", evaluate);
+      window.removeEventListener("blur", evaluate);
+      window.removeEventListener("focus", evaluate);
+    };
+    this.away = document.hidden || !document.hasFocus();
+  }
+
+  private setAway(away: boolean) {
+    if (this.away === away) return;
+    this.away = away;
+    if (!this.selfId) return;
+    const self = this.peerMeta.get(this.selfId);
+    if (self) this.peerMeta.set(this.selfId, { ...self, away });
+    useStore.getState().setCollab({ peers: this.peerList() });
+    void this.sendWire({ k: "focus", away });
+  }
+
   private startSweep() {
     if (this.sweepTimer) return;
     this.sweepTimer = window.setInterval(() => {
-      presence.pruneStale();
+      presence.prune(new Set(this.peerMeta.keys()));
       this.pruneChunks();
       if (!this.sceneReady && !this.askTimer) {
         this.askedPeers.clear();
@@ -940,10 +1141,11 @@ class CollabManager {
     const s = useStore.getState();
     if (this.reconnectAttempt >= RECONNECT_DELAYS.length) {
       s.setCollab({ status: "ended" });
-      s.toast("Lost the live session — the connection dropped", "error");
-      void this.teardown(false).then(() => {
-        useStore.getState().setDialog("keep-collab-copy");
-      });
+      s.toast(
+        "Lost the live session — this canvas stays under Shared canvases, so you can rejoin from there",
+        "error",
+      );
+      void this.rememberRoom().then(() => this.teardown(false));
       return;
     }
     s.setCollab({ status: "reconnecting" });
@@ -963,7 +1165,7 @@ class CollabManager {
   private async handleRoomClosed() {
     if (this.leaving || !this.roomId) return;
     useStore.getState().toast("The host ended this live session", "info");
-    await this.leave({ silent: true });
+    await this.leave({ silent: true, forget: true });
   }
 
   async endForEveryone() {
@@ -978,17 +1180,40 @@ class CollabManager {
         return;
       }
     }
-    await this.leave({ silent: true });
+    await this.leave({ silent: true, forget: true });
   }
 
-  async leave({ silent = false }: { silent?: boolean } = {}) {
+  async leave({
+    silent = false,
+    forget = false,
+  }: { silent?: boolean; forget?: boolean } = {}) {
     if (!this.roomId) return;
     this.leaving = true;
+    try {
+      if (forget) await this.forgetRoom(this.roomId);
+      else await this.rememberRoom();
+    } catch {
+      void 0;
+    }
     if (this.isLive()) await this.sendWire({ k: "bye" });
+    const queued = syncManager.hasQueuedSceneAfterRoom();
     await this.teardown(true);
-    useStore.getState().setDialog("keep-collab-copy");
+    if (forget) {
+      useStore.getState().setDialog("keep-collab-copy");
+      return;
+    }
+    if (queued) {
+      await syncManager.exitRoomScene();
+      if (!silent) useStore.getState().toast("You left the live session", "info");
+      return;
+    }
     if (silent) return;
-    useStore.getState().toast("You left the live session", "info");
+    useStore
+      .getState()
+      .toast(
+        "You left the live session — this canvas stays under Shared canvases",
+        "info",
+      );
   }
 
   private async teardown(intentional: boolean) {
@@ -1006,8 +1231,15 @@ class CollabManager {
     this.reconnectTimer = null;
     this.askTimer = null;
     this.sweepTimer = null;
+    if (this.focusTimer) window.clearTimeout(this.focusTimer);
+    this.focusTimer = null;
+    if (this.renameTimer) window.clearTimeout(this.renameTimer);
+    this.renameTimer = null;
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
+    this.detachFocus?.();
+    this.detachFocus = null;
+    this.away = false;
     this.socket?.close();
     this.socket = null;
     this.keys = null;
@@ -1023,6 +1255,7 @@ class CollabManager {
     this.bgReg = null;
     this.titleReg = null;
     this.sceneReady = false;
+    this.seededFromLocal = false;
     this.snapshotWarned = false;
     this.sceneWarned = false;
     this.regResend = false;

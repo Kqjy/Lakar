@@ -8,6 +8,8 @@ import { themedColor } from "../colors";
 import { getElementBounds } from "../elements";
 import { isLinearLike } from "../types";
 import { FONT_FAMILY_CSS, measureText } from "../text/measure";
+export { downloadBlob } from "./download";
+import { downloadBlob } from "./download";
 
 const PADDING = 24;
 
@@ -206,11 +208,3 @@ export const exportSVG = ({
   downloadBlob(blob, filename);
 };
 
-export const downloadBlob = (blob: Blob, filename: string) => {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-};

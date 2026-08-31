@@ -9,8 +9,12 @@ import { isArrowElement, isLinearLike } from "../types";
 import { newElementId, newVersionNonce, refreshTextDimensions } from "../elements";
 import { clamp, randomSeed } from "../math";
 import { isSceneLink, normalizeLink } from "../links";
-import { DEFAULT_CANVAS_BG, TEXT_LINE_HEIGHT } from "../constants";
-import { downloadBlob } from "./image";
+import {
+  DEFAULT_CANVAS_BG,
+  TEXT_LINE_HEIGHT,
+  TOMBSTONE_TTL,
+} from "../constants";
+import { downloadBlob } from "./download";
 
 export interface SceneDocument {
   type: "lakar";
@@ -19,18 +23,60 @@ export interface SceneDocument {
   elements: LakarElement[];
 }
 
+const asTombstone = (el: LakarElement, now: number): LakarElement =>
+  ({
+    id: el.id,
+    type: el.type,
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    angle: 0,
+    strokeColor: "transparent",
+    backgroundColor: "transparent",
+    fillStyle: "solid",
+    strokeWidth: 1,
+    strokeStyle: "solid",
+    roughness: 0,
+    opacity: 100,
+    roundEdges: false,
+    seed: el.seed,
+    version: el.version,
+    versionNonce: el.versionNonce,
+    isDeleted: true,
+    deletedAt: el.deletedAt ?? now,
+    groupIds: [],
+    frameId: null,
+    link: null,
+    locked: false,
+  }) as unknown as LakarElement;
+
 export const serializeScene = (
   elements: readonly LakarElement[],
   canvasBg: string,
   title?: string,
-): SceneDocument => ({
-  type: "lakar",
-  version: 1,
-  appState: title ? { canvasBg, title } : { canvasBg },
-  elements: JSON.parse(
-    JSON.stringify(elements.filter((el) => !el.isDeleted)),
-  ) as LakarElement[],
-});
+  keepDeleted = false,
+): SceneDocument => {
+  const now = Date.now();
+  const live = elements.filter((el) => !el.isDeleted);
+  const out = keepDeleted
+    ? [
+        ...(JSON.parse(JSON.stringify(live)) as LakarElement[]),
+        ...elements
+          .filter(
+            (el) =>
+              el.isDeleted && now - (el.deletedAt ?? now) < TOMBSTONE_TTL,
+          )
+          .map((el) => asTombstone(el, now)),
+      ]
+    : (JSON.parse(JSON.stringify(live)) as LakarElement[]);
+  return {
+    type: "lakar",
+    version: 1,
+    appState: title ? { canvasBg, title } : { canvasBg },
+    elements: out,
+  };
+};
 
 export const saveSceneFile = (
   elements: readonly LakarElement[],
@@ -58,6 +104,7 @@ const VALID_TYPES = new Set([
 
 export const parseSceneFile = (
   raw: string,
+  keepDeleted = false,
 ): { elements: LakarElement[]; canvasBg: string; title: string | null } => {
   const data = JSON.parse(raw);
   if (
@@ -66,8 +113,13 @@ export const parseSceneFile = (
   ) {
     return {
       elements: data.elements
-        .filter((el: { type?: string }) => VALID_TYPES.has(el?.type ?? ""))
-        .map(normalizeImported),
+        .filter(
+          (el: { type?: string; isDeleted?: boolean }) =>
+            VALID_TYPES.has(el?.type ?? "") && (keepDeleted || !el?.isDeleted),
+        )
+        .map((el: Record<string, unknown>) =>
+          normalizeImported(el, keepDeleted),
+        ),
       canvasBg: str(data.appState?.canvasBg, DEFAULT_CANVAS_BG),
       title: typeof data.appState?.title === "string" ? data.appState.title : null,
     };
@@ -94,7 +146,10 @@ export const parseSceneFile = (
   throw new Error("Not an Lakar or Excalidraw file");
 };
 
-const normalizeImported = (el: Record<string, unknown>): LakarElement => {
+const normalizeImported = (
+  el: Record<string, unknown>,
+  keepDeleted = false,
+): LakarElement => {
   const base = {
     id: str(el.id, newElementId()),
     type: el.type as LakarElement["type"],
@@ -118,7 +173,9 @@ const normalizeImported = (el: Record<string, unknown>): LakarElement => {
     seed: num(el.seed, randomSeed()),
     version: Math.max(1, Math.floor(num(el.version, 1))),
     versionNonce: num(el.versionNonce, newVersionNonce()),
-    isDeleted: false,
+    isDeleted: keepDeleted && el.isDeleted === true,
+    deletedAt:
+      keepDeleted && typeof el.deletedAt === "number" ? el.deletedAt : undefined,
     groupIds: Array.isArray(el.groupIds) ? (el.groupIds as string[]) : [],
     frameId: typeof el.frameId === "string" && el.frameId ? el.frameId : null,
     link: typeof el.link === "string" ? normalizeLink(el.link) : null,

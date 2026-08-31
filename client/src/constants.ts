@@ -95,3 +95,9 @@ export const LOCAL_GUEST_SCENE_KEY = "lakar:guest-scene";
 export const LOCAL_UI_KEY = "lakar:ui";
 export const LOCAL_SESSION_KEY = "lakar:session";
 export const LOCAL_PUBLISH_KEY = "lakar:published";
+
+const DAY = 1000 * 60 * 60 * 24;
+
+export const ROOM_RESUME_TTL = 21 * DAY;
+export const TOMBSTONE_TTL = ROOM_RESUME_TTL + 2 * DAY;
+export const MAX_ROOM_RESUMES = 5;

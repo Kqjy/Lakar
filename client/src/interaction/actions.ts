@@ -344,16 +344,7 @@ export const cutSelected = async () => {
   if (await copySelected()) deleteSelected();
 };
 
-export const pasteFromClipboard = async (scenePoint: Point | null) => {
-  const s = useStore.getState();
-  let text: string;
-  try {
-    text = await navigator.clipboard.readText();
-  } catch {
-    s.toast("Clipboard unavailable — allow clipboard access to paste", "error");
-    return;
-  }
-  if (!text) return;
+export const pasteText = (text: string, scenePoint: Point | null) => {
   try {
     const parsed = JSON.parse(text) as ClipboardPayload;
     if (parsed.type === CLIPBOARD_TYPE && Array.isArray(parsed.elements)) {
@@ -364,6 +355,19 @@ export const pasteFromClipboard = async (scenePoint: Point | null) => {
     
   }
   pastePlainText(text, scenePoint);
+};
+
+export const pasteFromClipboard = async (scenePoint: Point | null) => {
+  const s = useStore.getState();
+  let text: string;
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    s.toast("Clipboard unavailable — allow clipboard access to paste", "error");
+    return;
+  }
+  if (!text) return;
+  pasteText(text, scenePoint);
 };
 
 export const pasteElements = (

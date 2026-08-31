@@ -12,6 +12,7 @@ import type {
   ToolType,
   LakarElement,
   Viewport,
+  RoomResume,
 } from "./types";
 import {
   DEFAULT_CANVAS_BG,
@@ -149,6 +150,7 @@ export interface AppStore {
   folders: FolderMeta[];
 
   collab: CollabState;
+  sharedRooms: RoomResume[];
   displayName: string;
   pendingRoomId: string | null;
 
@@ -167,6 +169,7 @@ export interface AppStore {
   viewerLoadFailed: boolean;
 
   setCollab: (patch: Partial<CollabState>) => void;
+  setSharedRooms: (rooms: RoomResume[]) => void;
   setDisplayName: (name: string) => void;
   setPendingRoomId: (id: string | null) => void;
   setSatchelOpen: (open: boolean) => void;
@@ -256,6 +259,7 @@ export const useStore = create<AppStore>((set, get) => ({
   folders: [],
 
   collab: IDLE_COLLAB,
+  sharedRooms: [],
   displayName: prefs.displayName,
   pendingRoomId: null,
 
@@ -274,6 +278,7 @@ export const useStore = create<AppStore>((set, get) => ({
   viewerLoadFailed: false,
 
   setCollab: (patch) => set((s) => ({ collab: { ...s.collab, ...patch } })),
+  setSharedRooms: (sharedRooms) => set({ sharedRooms }),
   setDisplayName: (displayName) => {
     set({ displayName });
     persistPrefs(get());

@@ -44,7 +44,7 @@ import {
   getLooseTextInside,
   syncBoundText,
 } from "../boundText";
-import { insertImageBlob } from "../interaction/images";
+import { consumeTransfer, hasFiles } from "../interaction/transfer";
 import { setImageLoadNotifier } from "../renderer/imageCache";
 import {
   createElement,
@@ -367,14 +367,34 @@ export const CanvasArea = () => {
 
   useEffect(() => {
     const container = containerRef.current!;
+    let depth = 0;
+    const setDropping = (on: boolean) => {
+      container.classList.toggle("file-drop-target", on);
+    };
+    const onDragEnter = (e: DragEvent) => {
+      if (!hasFiles(e.dataTransfer)) return;
+      depth++;
+      setDropping(true);
+    };
+    const onDragLeave = (e: DragEvent) => {
+      if (!hasFiles(e.dataTransfer)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) setDropping(false);
+    };
     const onDragOver = (e: DragEvent) => {
       e.preventDefault();
-      if (e.dataTransfer?.types.includes(SATCHEL_DRAG_TYPE)) {
+      if (!e.dataTransfer) return;
+      if (
+        e.dataTransfer.types.includes(SATCHEL_DRAG_TYPE) ||
+        hasFiles(e.dataTransfer)
+      ) {
         e.dataTransfer.dropEffect = "copy";
       }
     };
     const onDrop = (e: DragEvent) => {
       e.preventDefault();
+      depth = 0;
+      setDropping(false);
       const p = clientToScene(e.clientX, e.clientY);
       const itemId = e.dataTransfer?.getData(SATCHEL_DRAG_TYPE);
       if (itemId) {
@@ -384,21 +404,23 @@ export const CanvasArea = () => {
         if (item) satchel.place(item, p);
         return;
       }
-      const files = e.dataTransfer?.files;
-      if (!files?.length) return;
-      for (const file of files) {
-        if (file.type.startsWith("image/")) {
-          void insertImageBlob(file, p);
-          return;
-        }
+      const s = useStore.getState();
+      if (s.viewerMode || s.presenting) return;
+      if (consumeTransfer(e.dataTransfer, p)) return;
+      if (hasFiles(e.dataTransfer)) {
+        s.toast("Drop an image file, or use Open… for scenes", "info");
       }
-      useStore.getState().toast("Drop an image file, or use Open… for scenes", "info");
     };
+    container.addEventListener("dragenter", onDragEnter);
+    container.addEventListener("dragleave", onDragLeave);
     container.addEventListener("dragover", onDragOver);
     container.addEventListener("drop", onDrop);
     return () => {
+      container.removeEventListener("dragenter", onDragEnter);
+      container.removeEventListener("dragleave", onDragLeave);
       container.removeEventListener("dragover", onDragOver);
       container.removeEventListener("drop", onDrop);
+      setDropping(false);
     };
   }, [clientToScene]);
 

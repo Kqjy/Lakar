@@ -107,6 +107,7 @@ export const mutateElement = <T extends LakarElement>(
   Object.assign(el, updates);
   el.version = (el.version || 0) + 1;
   el.versionNonce = newVersionNonce();
+  if (updates.isDeleted === true && !el.deletedAt) el.deletedAt = Date.now();
   return el;
 };
 

@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   Check,
   Copy,
@@ -9,6 +15,7 @@ import {
   LogOut,
   ShieldAlert,
   ShieldCheck,
+  RotateCcw,
   Users,
   X,
 } from "lucide-react";
@@ -25,6 +32,8 @@ import {
   type WrapRecord,
 } from "../sync/api";
 import { collab, CollabError } from "../collab/manager";
+import { presence } from "../collab/presence";
+import { centerOnPoint } from "../interaction/view";
 import { parseRoomHash } from "../crypto/room";
 import { AccountKeyError } from "../crypto/account";
 import { isValidRecoveryCode } from "../crypto/recovery";
@@ -34,6 +43,7 @@ import {
   PasskeyError,
 } from "../crypto/passkey";
 import type { RoomMode } from "../types";
+import type { RoomResume } from "../sync/local";
 import { PublishDialog } from "./PublishDialog";
 import { MermaidDialog } from "./MermaidDialog";
 
@@ -1195,6 +1205,10 @@ const useCopy = () => {
 
 const ShareDialog = () => {
   const collabState = useStore((s) => s.collab);
+  const pointers = useSyncExternalStore(presence.subscribe, presence.getPointers);
+  const sceneTitle = useStore((s) => s.sceneTitle);
+  const setPendingRoomId = useStore((s) => s.setPendingRoomId);
+  const [nameDraft, setNameDraft] = useState(sceneTitle);
   const displayName = useStore((s) => s.displayName);
   const setDisplayName = useStore((s) => s.setDisplayName);
   const setDialog = useStore((s) => s.setDialog);
@@ -1206,6 +1220,57 @@ const ShareDialog = () => {
   const { copied, copy } = useCopy();
 
   const live = collabState.status !== "idle" && collabState.status !== "ended";
+
+  useEffect(() => setNameDraft(sceneTitle), [sceneTitle]);
+
+  const [saved, setSaved] = useState<RoomResume[]>([]);
+
+  useEffect(() => {
+    if (live) return;
+    let alive = true;
+    void collab
+      .savedSessions()
+      .then((all) => {
+        if (alive) setSaved(all);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [live]);
+
+  const resumeSession = async (r: RoomResume) => {
+    setError(null);
+    if (r.mode === "password") {
+      setPendingRoomId(r.roomId);
+      setDialog("join");
+      return;
+    }
+    setBusy(true);
+    try {
+      await collab.rejoin(r);
+      setDialog(null);
+      toast("Back in the live session", "success");
+    } catch (err) {
+      setError(
+        err instanceof CollabError || err instanceof ApiError
+          ? err.message
+          : "Could not rejoin that session",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const commitName = () => {
+    const next = nameDraft.trim().slice(0, 120);
+    if (!next) {
+      setNameDraft(sceneTitle);
+      return;
+    }
+    setNameDraft(next);
+    if (next !== sceneTitle) useStore.getState().setSceneTitle(next);
+  };
 
   if (live) {
     return (
@@ -1247,19 +1312,72 @@ const ShareDialog = () => {
             </span>
           </div>
         )}
+        <div className="field" style={{ marginTop: 12 }}>
+          <label htmlFor="live-display-name">Your name in the session</label>
+          <input
+            id="live-display-name"
+            value={displayName}
+            maxLength={40}
+            onChange={(e) => setDisplayName(e.target.value)}
+            onKeyDown={(e) => e.stopPropagation()}
+          />
+          <p className="field-hint">
+            Everyone here sees this change straight away.
+          </p>
+        </div>
+        <div className="field" style={{ marginTop: 12 }}>
+          <label htmlFor="session-name">Session name</label>
+          <input
+            id="session-name"
+            value={nameDraft}
+            maxLength={120}
+            onChange={(e) => setNameDraft(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if (e.key === "Escape") {
+                setNameDraft(sceneTitle);
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+          />
+          <p className="field-hint">
+            Everyone in the session sees this name, and it renames the canvas
+            for them too.
+          </p>
+        </div>
         <div className="prop-label" style={{ marginTop: 4 }}>
           In this session — {collabState.peers.length}
         </div>
         <ul className="peer-list">
-          {collabState.peers.map((p) => (
-            <li key={p.id}>
-              <span className="peer-avatar" style={{ background: p.color }}>
-                {p.name.trim().slice(0, 1) || "?"}
-              </span>
-              <span className="peer-name">{p.name}</span>
-              {p.isSelf && <span className="peer-tag">you</span>}
-            </li>
-          ))}
+          {collabState.peers.map((p) => {
+            const at = p.isSelf
+              ? null
+              : pointers.find((ptr) => ptr.id === p.id) ?? null;
+            return (
+              <li
+                key={p.id}
+                className={`${p.away ? "away" : ""} ${at ? "locatable" : ""}`}
+                title={at ? `Jump to ${p.name}` : undefined}
+                onClick={
+                  at
+                    ? () => {
+                        centerOnPoint({ x: at.x, y: at.y });
+                        setDialog(null);
+                      }
+                    : undefined
+                }
+              >
+                <span className="peer-avatar" style={{ background: p.color }}>
+                  {p.name.trim().slice(0, 1) || "?"}
+                </span>
+                <span className="peer-name">{p.name}</span>
+                {p.isSelf && <span className="peer-tag">you</span>}
+                {p.away && <span className="peer-tag away">away</span>}
+              </li>
+            );
+          })}
         </ul>
         <div className="dialog-actions">
           <button className="btn btn-ghost" onClick={() => setDialog(null)}>
@@ -1347,6 +1465,48 @@ const ShareDialog = () => {
           onKeyDown={(e) => e.stopPropagation()}
         />
       </div>
+      {saved.length > 0 && (
+        <div className="resume-block">
+          <div className="prop-label" style={{ marginBottom: 6 }}>
+            Rejoin a session you left
+          </div>
+          <ul className="resume-list">
+            {saved.map((r) => (
+              <li key={r.roomId}>
+                <button
+                  className="resume-item"
+                  disabled={busy}
+                  onClick={() => void resumeSession(r)}
+                >
+                  <RotateCcw size={15} />
+                  <span className="resume-name">{r.title}</span>
+                  <span className="resume-when">
+                    {r.mode === "password" ? "password" : "link"}
+                  </span>
+                </button>
+                <button
+                  className="resume-forget"
+                  title="Forget this session"
+                  aria-label={`Forget ${r.title}`}
+                  disabled={busy}
+                  onClick={async () => {
+                    await collab.forgetSavedSession(r.roomId);
+                    setSaved((list) =>
+                      list.filter((x) => x.roomId !== r.roomId),
+                    );
+                  }}
+                >
+                  <X size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="field-hint">
+            Your copy of each canvas is still on this device, so rejoining
+            resumes it instead of starting from scratch.
+          </p>
+        </div>
+      )}
       <div className="prop-label" style={{ marginBottom: 6 }}>
         Who can join
       </div>
@@ -1519,11 +1679,51 @@ const JoinDialog = () => {
 
 const KeepCopyDialog = () => {
   const setDialog = useStore((s) => s.setDialog);
+  const setPendingRoomId = useStore((s) => s.setPendingRoomId);
   const toast = useStore((s) => s.toast);
   const [title, setTitle] = useState(
     () => useStore.getState().sceneTitle.trim() || "Shared canvas",
   );
   const [busy, setBusy] = useState(false);
+  const [resume, setResume] = useState<RoomResume | null>(null);
+
+  useEffect(() => {
+    const roomId = collab.resumableRoomId();
+    if (!roomId) return;
+    let live = true;
+    void collab
+      .savedSessions()
+      .then((all) => {
+        if (live) setResume(all.find((r) => r.roomId === roomId) ?? null);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const rejoin = async () => {
+    if (!resume) return;
+    setBusy(true);
+    if (resume.mode === "password") {
+      setPendingRoomId(resume.roomId);
+      setDialog("join");
+      return;
+    }
+    try {
+      await collab.rejoin(resume);
+      setDialog(null);
+      toast("Back in the live session", "success");
+    } catch (err) {
+      setBusy(false);
+      toast(
+        err instanceof CollabError || err instanceof ApiError
+          ? err.message
+          : "Could not rejoin that session",
+        "error",
+      );
+    }
+  };
 
   return (
     <>
@@ -1531,6 +1731,9 @@ const KeepCopyDialog = () => {
       <p className="dialog-sub">
         You left the live session. Save what you were working on, or drop it and
         go back to your own canvas.
+        {resume
+          ? " Your copy of this canvas stays on this device, so rejoining picks up where you left off instead of starting over."
+          : ""}
       </p>
       <div className="field">
         <label htmlFor="keep-title">Name for the copy</label>
@@ -1543,6 +1746,21 @@ const KeepCopyDialog = () => {
         />
       </div>
       <div className="dialog-actions">
+        {resume && (
+          <button
+            className="btn btn-ghost"
+            disabled={busy}
+            title="Delete the saved copy of this session from this device"
+            onClick={async () => {
+              setBusy(true);
+              await collab.forgetSavedSession(resume.roomId);
+              setResume(null);
+              setBusy(false);
+            }}
+          >
+            Forget session
+          </button>
+        )}
         <button
           className="btn btn-ghost"
           disabled={busy}
@@ -1554,6 +1772,11 @@ const KeepCopyDialog = () => {
         >
           Discard
         </button>
+        {resume && (
+          <button className="btn btn-outline" disabled={busy} onClick={rejoin}>
+            <Users size={15} /> Rejoin
+          </button>
+        )}
         <button
           className="btn btn-primary"
           disabled={busy}

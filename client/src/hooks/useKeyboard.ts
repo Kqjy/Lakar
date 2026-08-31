@@ -13,7 +13,7 @@ import {
   selectAll,
   ungroupSelected,
 } from "../interaction/actions";
-import { insertImageFromPicker, pasteSmart } from "../interaction/images";
+import { insertImageFromPicker } from "../interaction/images";
 import { zoomIn, zoomOut, zoomTo100, zoomToFit } from "../interaction/view";
 import { saveSceneFile } from "../export/json";
 import { openFromFile } from "../interaction/fileOps";
@@ -140,10 +140,6 @@ export const useKeyboard = () => {
           case "x":
             e.preventDefault();
             void cutSelected();
-            return;
-          case "v":
-            e.preventDefault();
-            void pasteSmart(null);
             return;
           case "s":
             e.preventDefault();

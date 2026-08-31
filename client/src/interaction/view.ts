@@ -2,7 +2,7 @@ import { getSelectedElements, getVisibleElements, useStore } from "../store";
 import { getCommonBounds, getRotatedBounds } from "../elements";
 import { clamp } from "../math";
 import { MAX_ZOOM, MIN_ZOOM } from "../constants";
-import type { Bounds } from "../types";
+import type { Bounds, Point } from "../types";
 
 const viewportSize = () => ({
   w: window.innerWidth,
@@ -88,4 +88,15 @@ export const revealElement = (id: string, select = true) => {
 
 export const resetScroll = () => {
   useStore.getState().setViewport({ scrollX: 0, scrollY: 0, zoom: 1 });
+};
+
+export const centerOnPoint = (point: Point, zoom?: number) => {
+  const s = useStore.getState();
+  const { w, h } = viewportSize();
+  const next = clamp(zoom ?? s.viewport.zoom, MIN_ZOOM, MAX_ZOOM);
+  s.setViewport({
+    zoom: next,
+    scrollX: point.x - w / 2 / next,
+    scrollY: point.y - h / 2 / next,
+  });
 };
