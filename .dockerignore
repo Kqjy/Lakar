@@ -1,0 +1,35 @@
+# Dependencies and build output (installed/built inside the image)
+node_modules/
+client/node_modules/
+server/node_modules/
+client/dist/
+
+# Runtime data & secrets — never bake a local database or token secret into an image
+data/
+server/data/
+data-e2e/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+secret.key
+
+# Environment
+.env
+.env.*
+
+# Repo and editor cruft
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# Not needed at runtime
+Dockerfile
+docker-compose.yml
+README.md
+LICENSE

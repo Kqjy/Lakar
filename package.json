@@ -1,0 +1,18 @@
+{
+  "name": "lakar",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Lakar \u2014 a hand-drawn whiteboard with end-to-end encrypted cloud sync",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace client",
+    "dev:server": "npm run dev --workspace server",
+    "build": "npm run build --workspace client",
+    "start": "npm run start --workspace server",
+    "invite": "npm run invite --workspace server --",
+    "test": "node --import ./client/test/resolve-ts.mjs --test client/src/**/*.test.ts server/*.test.js"
+  }
+}

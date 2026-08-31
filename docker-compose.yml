@@ -1,0 +1,14 @@
+services:
+  lakar:
+    build: .
+    container_name: lakar
+    restart: unless-stopped
+    ports:
+      - "5191:5191"
+    volumes:
+      - lakar-data:/data
+    environment:
+      - TRUST_PROXY=1
+
+volumes:
+  lakar-data:

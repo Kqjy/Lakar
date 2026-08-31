@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+client/dist/
+
+# Runtime data & secrets (SQLite DB, server signing key)
+data/
+server/data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+secret.key
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+data-e2e/
