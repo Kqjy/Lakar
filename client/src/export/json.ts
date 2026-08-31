@@ -15,17 +15,18 @@ import { downloadBlob } from "./image";
 export interface SceneDocument {
   type: "lakar";
   version: 1;
-  appState: { canvasBg: string };
+  appState: { canvasBg: string; title?: string };
   elements: LakarElement[];
 }
 
 export const serializeScene = (
   elements: readonly LakarElement[],
   canvasBg: string,
+  title?: string,
 ): SceneDocument => ({
   type: "lakar",
   version: 1,
-  appState: { canvasBg },
+  appState: title ? { canvasBg, title } : { canvasBg },
   elements: JSON.parse(
     JSON.stringify(elements.filter((el) => !el.isDeleted)),
   ) as LakarElement[],
@@ -36,7 +37,7 @@ export const saveSceneFile = (
   canvasBg: string,
   title: string,
 ) => {
-  const doc = serializeScene(elements, canvasBg);
+  const doc = serializeScene(elements, canvasBg, title);
   const blob = new Blob([JSON.stringify(doc, null, 2)], {
     type: "application/json",
   });
@@ -57,7 +58,7 @@ const VALID_TYPES = new Set([
 
 export const parseSceneFile = (
   raw: string,
-): { elements: LakarElement[]; canvasBg: string } => {
+): { elements: LakarElement[]; canvasBg: string; title: string | null } => {
   const data = JSON.parse(raw);
   if (
     (data?.type === "lakar" || data?.type === "vellum") &&
@@ -68,6 +69,7 @@ export const parseSceneFile = (
         .filter((el: { type?: string }) => VALID_TYPES.has(el?.type ?? ""))
         .map(normalizeImported),
       canvasBg: str(data.appState?.canvasBg, DEFAULT_CANVAS_BG),
+      title: typeof data.appState?.title === "string" ? data.appState.title : null,
     };
   }
   if (data?.type === "excalidraw" && Array.isArray(data.elements)) {
@@ -86,6 +88,7 @@ export const parseSceneFile = (
           (el: LakarElement) => el.type !== "image" || el.dataURL,
         ),
       canvasBg: str(data.appState?.viewBackgroundColor, DEFAULT_CANVAS_BG),
+      title: typeof data.appState?.name === "string" ? data.appState.name : null,
     };
   }
   throw new Error("Not an Lakar or Excalidraw file");

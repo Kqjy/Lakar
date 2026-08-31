@@ -44,7 +44,10 @@ export const Dialogs = () => {
   if (!dialog || dialog === "scenes") return null;
 
   const close = () => setDialog(null);
-  const locked = dialog === "keep-collab-copy" || dialog === "recovery-code";
+  const locked =
+    dialog === "keep-collab-copy" ||
+    dialog === "leave-live-confirm" ||
+    dialog === "recovery-code";
 
   return (
     <div
@@ -80,6 +83,7 @@ export const Dialogs = () => {
         {dialog === "mermaid" && <MermaidDialog />}
         {dialog === "join" && <JoinDialog />}
         {dialog === "keep-collab-copy" && <KeepCopyDialog />}
+        {dialog === "leave-live-confirm" && <LeaveLiveDialog />}
         {dialog === "unlock" && <UnlockDialog />}
         {dialog === "recovery-code" && <RecoveryCodeDialog />}
         {dialog === "recover" && <RecoverDialog />}
@@ -1210,7 +1214,9 @@ const ShareDialog = () => {
         <p className="dialog-sub">
           {collabState.mode === "password"
             ? "Anyone with the link and the password can draw here together with you."
-            : "Anyone with this link can draw here together with you."}
+            : "Anyone with this link can draw here together with you."}{" "}
+          The session belongs to everyone in it — leaving keeps it running for
+          the rest.
         </p>
         <div className="share-link-row">
           <input
@@ -1259,7 +1265,18 @@ const ShareDialog = () => {
           <button className="btn btn-ghost" onClick={() => setDialog(null)}>
             Keep drawing
           </button>
-          {collabState.isHost ? (
+          <button
+            className="btn btn-outline"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              await collab.leave();
+              setBusy(false);
+            }}
+          >
+            <LogOut size={15} /> Leave session
+          </button>
+          {collabState.isHost && (
             <button
               className="btn btn-danger"
               disabled={busy}
@@ -1267,23 +1284,10 @@ const ShareDialog = () => {
                 setBusy(true);
                 await collab.endForEveryone();
                 setBusy(false);
-                setDialog(null);
                 toast("Session ended for everyone", "info");
               }}
             >
-              <LogOut size={15} /> End for everyone
-            </button>
-          ) : (
-            <button
-              className="btn btn-outline"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                await collab.leave();
-                setBusy(false);
-              }}
-            >
-              <LogOut size={15} /> Leave session
+              End for everyone
             </button>
           )}
         </div>
@@ -1516,7 +1520,9 @@ const JoinDialog = () => {
 const KeepCopyDialog = () => {
   const setDialog = useStore((s) => s.setDialog);
   const toast = useStore((s) => s.toast);
-  const [title, setTitle] = useState("Shared canvas");
+  const [title, setTitle] = useState(
+    () => useStore.getState().sceneTitle.trim() || "Shared canvas",
+  );
   const [busy, setBusy] = useState(false);
 
   return (
@@ -1556,16 +1562,62 @@ const KeepCopyDialog = () => {
             const ok = await collab.keepRoomSceneCopy(
               title.trim() || "Shared canvas",
             );
+            setBusy(false);
+            if (!ok) {
+              toast(
+                "Could not save the copy — you are still on the shared canvas, so try again or export it to a file",
+                "error",
+              );
+              return;
+            }
             setDialog(null);
-            toast(
-              ok
-                ? "Saved a copy of the shared canvas"
-                : "Could not save a copy — it stayed on this device only",
-              ok ? "success" : "error",
-            );
+            toast("Saved a copy of the shared canvas", "success");
           }}
         >
           Keep it
+        </button>
+      </div>
+    </>
+  );
+};
+
+const LeaveLiveDialog = () => {
+  const setDialog = useStore((s) => s.setDialog);
+  const isHost = useStore((s) => s.collab.isHost);
+  const others = useStore((s) => s.collab.peers.filter((p) => !p.isSelf).length);
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <>
+      <h2 className="dialog-title">Leave the live session?</h2>
+      <p className="dialog-sub">
+        {others
+          ? `The session keeps running for the ${others === 1 ? "other person" : `other ${others} people`} — they can carry on drawing without you.`
+          : "The session stays open, so anyone with the link can still join and pick up where you left off."}
+        {isHost
+          ? " To shut it down for everyone instead, use End for everyone."
+          : ""}
+      </p>
+      <div className="dialog-actions">
+        <button
+          className="btn btn-ghost"
+          disabled={busy}
+          onClick={() => {
+            syncManager.queueSceneAfterRoom(null);
+            setDialog(null);
+          }}
+        >
+          Stay
+        </button>
+        <button
+          className="btn btn-primary"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            await collab.leave({ silent: true });
+          }}
+        >
+          Leave session
         </button>
       </div>
     </>
@@ -1635,7 +1687,8 @@ const AccountDialog = () => {
           <div className="sec-row-text">
             <div className="sec-row-title">Password</div>
             <div className="sec-row-desc">
-              Changing it re-wraps your key — your scenes are not re-encrypted.
+              Changing it keeps all your scenes. You’ll be signed out on your
+              other devices.
             </div>
           </div>
           <button
@@ -1649,8 +1702,8 @@ const AccountDialog = () => {
           <div className="sec-row-text">
             <div className="sec-row-title">Recovery code</div>
             <div className="sec-row-desc">
-              The only way back in if you forget your password. Creating a new
-              one replaces the old.
+              The only way back in if you forget your password. A new code
+              replaces the old one.
             </div>
           </div>
           <button

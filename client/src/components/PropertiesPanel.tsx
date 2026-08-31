@@ -22,7 +22,7 @@ import {
   Ungroup,
 } from "lucide-react";
 import { getSelectedElements, useStore } from "../store";
-import type { ItemDefaults, ToolType, LakarElement } from "../types";
+import type { ItemDefaults, Theme, ToolType, LakarElement } from "../types";
 import {
   BACKGROUND_COLORS,
   BACKGROUND_SHADES,
@@ -41,7 +41,7 @@ import {
   ungroupSelected,
 } from "../interaction/actions";
 import { history } from "../history";
-import { hexToHsv, hsvToHex, type HSV } from "../colors";
+import { hexToHsv, hsvToHex, themedColor, type HSV } from "../colors";
 
 type PropKey = keyof ItemDefaults;
 
@@ -444,6 +444,7 @@ const ColorRow = ({
   onPick: (c: string) => void;
   onLive: (c: string) => void;
 }) => {
+  const theme = useStore((s) => s.theme);
   const [open, setOpen] = useState(false);
   const [hex, setHex] = useState(current);
   const [hsv, setHsv] = useState<HSV>(() => hexToHsv(current) ?? { h: 174, s: 0.8, v: 0.5 });
@@ -548,7 +549,13 @@ const ColorRow = ({
     <div className="color-pop-anchor" ref={anchorRef}>
       <div className="swatch-row">
         {colors.map((c) => (
-          <Swatch key={c} color={c} selected={current === c} onPick={onPick} />
+          <Swatch
+            key={c}
+            color={c}
+            theme={theme}
+            selected={current === c}
+            onPick={onPick}
+          />
         ))}
         <button
           className={`swatch ${shown ? "" : "selected"}`}
@@ -558,7 +565,7 @@ const ColorRow = ({
                 ? undefined
                 : shown
                   ? "conic-gradient(#c94040, #c77b1e, #3a7d44, #3563c9, #c94040)"
-                  : current,
+                  : themedColor(current, theme),
           }}
           title="More colors"
           onClick={toggleOpen}
@@ -586,7 +593,7 @@ const ColorRow = ({
               style={{
                 left: `${hsv.s * 100}%`,
                 top: `${(1 - hsv.v) * 100}%`,
-                background: hsvToHex(hsv),
+                background: themedColor(hsvToHex(hsv), theme),
               }}
             />
           </div>
@@ -603,7 +610,13 @@ const ColorRow = ({
             {shades.map(
               (c) =>
                 (c !== "transparent" || allowTransparent) && (
-                  <Swatch key={c} color={c} selected={current === c} onPick={onPick} />
+                  <Swatch
+                    key={c}
+                    color={c}
+                    theme={theme}
+                    selected={current === c}
+                    onPick={onPick}
+                  />
                 ),
             )}
           </div>
@@ -611,7 +624,10 @@ const ColorRow = ({
             <span
               className={`swatch ${current === "transparent" ? "transparent" : ""}`}
               style={{
-                background: current === "transparent" ? undefined : current,
+                background:
+                  current === "transparent"
+                    ? undefined
+                    : themedColor(current, theme),
                 width: 30,
                 height: 30,
               }}
@@ -637,16 +653,22 @@ const ColorRow = ({
 
 const Swatch = ({
   color,
+  theme,
   selected,
   onPick,
 }: {
   color: string;
+  theme: Theme;
   selected: boolean;
   onPick: (c: string) => void;
 }) => (
   <button
     className={`swatch ${color === "transparent" ? "transparent" : ""} ${selected ? "selected" : ""}`}
-    style={color === "transparent" ? undefined : { background: color }}
+    style={
+      color === "transparent"
+        ? undefined
+        : { background: themedColor(color, theme) }
+    }
     title={color === "transparent" ? "Transparent" : color}
     onClick={() => onPick(color)}
     aria-label={color}

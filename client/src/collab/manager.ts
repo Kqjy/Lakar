@@ -35,6 +35,16 @@ const PEER_COLORS = [
 const BROADCAST_INTERVAL = 90;
 const POINTER_INTERVAL = 48;
 const SNAPSHOT_DEBOUNCE = 5000;
+const SCENE_ASK_TIMEOUT = 4000;
+const CHUNK_CHARS = 512 * 1024;
+const CHUNK_BURST = 48;
+const CHUNK_PAUSE = 400;
+const CHUNK_TTL = 90_000;
+const MAX_INBOUND_CHARS = 64 * 1024 * 1024;
+const MAX_CHUNKS = Math.ceil(MAX_INBOUND_CHARS / CHUNK_CHARS);
+const MAX_INBOUND_MESSAGES = 16;
+const MAX_CHUNK_ID = 64;
+const MAX_SNAPSHOT_CHARS = 12 * 1024 * 1024;
 const PRESENCE_SWEEP = 8000;
 const RECONNECT_DELAYS = [800, 1600, 3200, 6000, 10_000];
 
@@ -47,10 +57,70 @@ type Wire =
       tool: ToolType;
       selectedIds: string[];
     }
-  | { k: "update"; elements: LakarElement[]; canvasBg?: string }
+  | {
+      k: "update";
+      elements: LakarElement[];
+      canvasBg?: WireReg;
+      title?: WireReg;
+    }
   | { k: "ask-scene" }
-  | { k: "scene"; elements: LakarElement[]; canvasBg: string }
+  | {
+      k: "scene";
+      elements: LakarElement[];
+      canvasBg: WireReg;
+      title?: WireReg;
+    }
   | { k: "bye" };
+
+interface Reg {
+  text: string;
+  version: number;
+  nonce: number;
+}
+
+type WireReg = Reg | string;
+
+const newNonce = () => Math.floor(Math.random() * 0x7fffffff);
+
+const asReg = (value: WireReg): Reg | null => {
+  if (typeof value === "string") {
+    return value ? { text: value, version: -1, nonce: 0 } : null;
+  }
+  if (
+    !value ||
+    typeof value.text !== "string" ||
+    !value.text ||
+    !Number.isInteger(value.version) ||
+    !Number.isInteger(value.nonce)
+  ) {
+    return null;
+  }
+  return { text: value.text, version: value.version, nonce: value.nonce };
+};
+
+const regWins = (local: Reg | null, remote: Reg): boolean => {
+  if (!local) return true;
+  if (remote.version === -1) return true;
+  if (remote.version !== local.version) return remote.version > local.version;
+  return remote.nonce < local.nonce;
+};
+
+const bumped = (local: Reg | null, text: string): Reg => ({
+  text,
+  version: Math.max(0, local?.version ?? 0) + 1,
+  nonce: newNonce(),
+});
+
+interface ChunkBuffer {
+  total: number;
+  parts: (string | null)[];
+  received: number;
+  chars: number;
+  updatedAt: number;
+}
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
 const colorFor = (id: string) => {
   let hash = 0;
@@ -77,7 +147,10 @@ class CollabManager {
   private isHost = false;
 
   private sentVersions = new Map<string, number>();
-  private lastSentBg: string | null = null;
+  private bgReg: Reg | null = null;
+  private titleReg: Reg | null = null;
+  private sceneReady = false;
+  private askTimer: number | null = null;
   private broadcastTimer: number | null = null;
   private pointerTimer: number | null = null;
   private pointerPending: Wire | null = null;
@@ -91,6 +164,14 @@ class CollabManager {
   private leaving = false;
   private peerMeta = new Map<string, CollabPeer>();
   private askedPeers = new Set<string>();
+  private inbound = new Map<string, ChunkBuffer>();
+  private outboundSeq = 0;
+  private sendChain: Promise<void> = Promise.resolve();
+  private servingScene = new Set<string>();
+  private generation = 0;
+  private snapshotWarned = false;
+  private regResend = false;
+  private sceneWarned = false;
 
   isLive() {
     return this.socket?.readyState === WebSocket.OPEN && !!this.roomId;
@@ -131,11 +212,13 @@ class CollabManager {
       peers: [],
       shareLink: buildRoomLink(roomId, secret),
     });
+    await syncManager.enterRoomScene(roomId, s.sceneTitle);
     this.resetOutbound();
+    this.sceneReady = true;
     try {
       await this.connect();
     } catch (err) {
-      await this.abortConnect(false);
+      await this.abortConnect(true);
       throw err;
     }
     writeRoomHash(roomId, secret);
@@ -152,6 +235,7 @@ class CollabManager {
     this.ownerToken = null;
     this.selfId = null;
     this.isHost = false;
+    this.sceneReady = false;
     this.resetOutbound();
     useStore.getState().setCollab(IDLE_COLLAB);
     if (restoreScene) await syncManager.exitRoomScene();
@@ -191,6 +275,7 @@ class CollabManager {
     clearShapeCache();
     history.reset();
     this.resetOutbound();
+    this.sceneReady = false;
 
     try {
       await this.connect();
@@ -200,20 +285,25 @@ class CollabManager {
     }
     writeRoomHash(roomId, this.secret);
 
-    if (info.peers === 0 && info.hasSnapshot) {
-      await this.loadServerSnapshot();
+    if (info.peers === 0) {
+      this.sceneReady = await this.loadServerSnapshot();
+      if (!this.sceneReady) this.warnSceneUnavailable();
     }
   }
 
   private resetOutbound() {
     this.sentVersions.clear();
-    this.lastSentBg = null;
+    this.bgReg = null;
+    this.titleReg = null;
     this.askedPeers.clear();
     this.peerMeta.clear();
+    this.inbound.clear();
+    this.servingScene.clear();
     presence.clear();
   }
 
   private connect(): Promise<void> {
+    this.generation++;
     return new Promise((resolve, reject) => {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
@@ -308,18 +398,64 @@ class CollabManager {
       joinedAt: Date.now(),
     };
     this.peerMeta.set(message.id, self);
+    for (const id of message.peers) {
+      if (this.peerMeta.has(id)) continue;
+      this.peerMeta.set(id, {
+        id,
+        name: "Guest",
+        color: colorFor(id),
+        isSelf: false,
+        joinedAt: Date.now(),
+      });
+    }
     s.setCollab({ status: "live", peers: this.peerList() });
 
     void this.sendWire(this.helloPayload());
 
-    const [first] = message.peers;
-    if (first && !this.askedPeers.has(first)) {
-      this.askedPeers.add(first);
-      void this.sendWire({ k: "ask-scene" }, first);
+    if (this.sceneReady) {
+      void this.flushBroadcast();
+    } else {
+      this.askScene();
     }
 
     this.attachStoreWatcher();
     this.startSweep();
+  }
+
+  private askScene() {
+    if (this.sceneReady || !this.isLive()) return;
+    const next = [...this.peerMeta.keys()].find(
+      (id) => id !== this.selfId && !this.askedPeers.has(id),
+    );
+    if (!next) {
+      void this.loadServerSnapshot().then((ok) => {
+        if (this.sceneReady || !this.isLive()) return;
+        if (ok) {
+          this.sceneReady = true;
+          return;
+        }
+        this.warnSceneUnavailable();
+      });
+      return;
+    }
+    this.askedPeers.add(next);
+    void this.sendWire({ k: "ask-scene" }, next);
+    if (this.askTimer) window.clearTimeout(this.askTimer);
+    this.askTimer = window.setTimeout(() => {
+      this.askTimer = null;
+      this.askScene();
+    }, SCENE_ASK_TIMEOUT);
+  }
+
+  private warnSceneUnavailable() {
+    if (this.sceneWarned) return;
+    this.sceneWarned = true;
+    useStore
+      .getState()
+      .toast(
+        "Could not load this canvas yet — waiting for someone who has it",
+        "error",
+      );
   }
 
   private helloPayload(): Wire {
@@ -341,23 +477,125 @@ class CollabManager {
   private dropPeer(id: string) {
     this.peerMeta.delete(id);
     this.askedPeers.delete(id);
+    this.servingScene.delete(id);
+    for (const key of this.inbound.keys()) {
+      if (key.startsWith(`${id}:`)) this.inbound.delete(key);
+    }
     presence.remove(id);
     useStore.getState().setCollab({ peers: this.peerList() });
   }
 
   private async sendWire(payload: Wire, to?: string) {
-    const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN || !this.keys) return;
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.keys) {
+      return;
+    }
+    let cipher: string;
     try {
-      const d = await encryptString(this.keys.key, JSON.stringify(payload));
+      cipher = await encryptString(this.keys.key, JSON.stringify(payload));
+    } catch {
+      return;
+    }
+    if (cipher.length <= CHUNK_CHARS) {
+      this.rawSend(cipher, to);
+      return;
+    }
+    const total = Math.ceil(cipher.length / CHUNK_CHARS);
+    const id = `${this.selfId ?? "s"}${this.outboundSeq++}`;
+    const socket = this.socket;
+    const generation = this.generation;
+    const run = this.sendChain.then(async () => {
+      for (let i = 0; i < total; i++) {
+        if (this.generation !== generation || this.socket !== socket) return;
+        if (!this.isLive()) return;
+        const part = cipher.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS);
+        this.rawSend(`x1.${id}.${i}.${total}.${part}`, to);
+        if (i > 0 && i % CHUNK_BURST === 0) await sleep(CHUNK_PAUSE);
+      }
+    });
+    this.sendChain = run.catch(() => undefined);
+    await run;
+  }
+
+  private rawSend(d: string, to?: string) {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    try {
       socket.send(JSON.stringify(to ? { t: "msg", to, d } : { t: "msg", d }));
     } catch {
       void 0;
     }
   }
 
-  private async onWire(from: string, ciphertext: string) {
+  private reassemble(from: string, d: string): string | null {
+    if (!d.startsWith("x1.")) return d;
+    const head = d.indexOf(".", 3);
+    const mid = head < 0 ? -1 : d.indexOf(".", head + 1);
+    const tail = mid < 0 ? -1 : d.indexOf(".", mid + 1);
+    if (tail < 0) return null;
+    const id = d.slice(3, head);
+    const index = Number(d.slice(head + 1, mid));
+    const total = Number(d.slice(mid + 1, tail));
+    const part = d.slice(tail + 1);
+    if (
+      !id ||
+      id.length > MAX_CHUNK_ID ||
+      !/^[A-Za-z0-9_-]+$/.test(id) ||
+      !Number.isInteger(index) ||
+      !Number.isInteger(total) ||
+      total < 1 ||
+      total > MAX_CHUNKS ||
+      index < 0 ||
+      index >= total ||
+      part.length > CHUNK_CHARS
+    ) {
+      return null;
+    }
+
+    const key = `${from}:${id}`;
+    let buf = this.inbound.get(key);
+    if (!buf) {
+      if (this.inbound.size >= MAX_INBOUND_MESSAGES) return null;
+      if (this.bufferedChars() + part.length > MAX_INBOUND_CHARS) return null;
+      buf = {
+        total,
+        parts: new Array<string | null>(total).fill(null),
+        received: 0,
+        chars: 0,
+        updatedAt: Date.now(),
+      };
+      this.inbound.set(key, buf);
+    }
+    if (buf.total !== total || buf.parts[index] !== null) return null;
+    if (this.bufferedChars() + part.length > MAX_INBOUND_CHARS) {
+      this.inbound.delete(key);
+      return null;
+    }
+    buf.parts[index] = part;
+    buf.received++;
+    buf.chars += part.length;
+    buf.updatedAt = Date.now();
+    if (buf.received !== buf.total) return null;
+    this.inbound.delete(key);
+    return buf.parts.join("");
+  }
+
+  private bufferedChars() {
+    let total = 0;
+    for (const buf of this.inbound.values()) total += buf.chars;
+    return total;
+  }
+
+  private pruneChunks() {
+    const cutoff = Date.now() - CHUNK_TTL;
+    for (const [key, buf] of this.inbound) {
+      if (buf.updatedAt < cutoff) this.inbound.delete(key);
+    }
+  }
+
+  private async onWire(from: string, framed: string) {
     if (!this.keys) return;
+    const ciphertext = this.reassemble(from, framed);
+    if (ciphertext === null) return;
     let payload: Wire;
     try {
       payload = JSON.parse(
@@ -379,6 +617,7 @@ class CollabManager {
           joinedAt: existing?.joinedAt ?? payload.joinedAt ?? Date.now(),
         });
         s.setCollab({ peers: this.peerList() });
+        if (!this.sceneReady && !this.askTimer) this.askScene();
         break;
       }
       case "pointer": {
@@ -397,24 +636,38 @@ class CollabManager {
       }
       case "update": {
         this.applyRemoteElements(payload.elements, payload.canvasBg);
+        if (payload.title) this.applyRemoteTitle(payload.title);
         break;
       }
       case "ask-scene": {
-        const current = useStore.getState();
-        await this.sendWire(
-          {
-            k: "scene",
-            elements: JSON.parse(
-              JSON.stringify(current.elements),
-            ) as LakarElement[],
-            canvasBg: current.canvasBg,
-          },
-          from,
-        );
+        if (!this.sceneReady || this.servingScene.has(from)) break;
+        this.servingScene.add(from);
+        try {
+          const current = useStore.getState();
+          await this.sendWire(
+            {
+              k: "scene",
+              elements: JSON.parse(
+                JSON.stringify(current.elements),
+              ) as LakarElement[],
+              canvasBg: this.bgReg ?? current.canvasBg,
+              title: this.titleReg ?? current.sceneTitle,
+            },
+            from,
+          );
+        } finally {
+          this.servingScene.delete(from);
+        }
         break;
       }
       case "scene": {
-        this.applyRemoteScene(payload.elements, payload.canvasBg);
+        if (this.askTimer) {
+          window.clearTimeout(this.askTimer);
+          this.askTimer = null;
+        }
+        this.sceneReady = true;
+        this.sceneWarned = false;
+        this.applyRemoteScene(payload.elements, payload.canvasBg, payload.title);
         break;
       }
       case "bye": {
@@ -424,7 +677,7 @@ class CollabManager {
     }
   }
 
-  private applyRemoteElements(incoming: LakarElement[], canvasBg?: string) {
+  private applyRemoteElements(incoming: LakarElement[], canvasBg?: WireReg) {
     if (!Array.isArray(incoming) || !incoming.length) {
       if (canvasBg) this.applyRemoteBg(canvasBg);
       return;
@@ -450,43 +703,96 @@ class CollabManager {
     }
   }
 
-  private applyRemoteBg(canvasBg: string) {
-    const s = useStore.getState();
-    if (s.canvasBg === canvasBg) return;
-    this.lastSentBg = canvasBg;
-    s.setCanvasBg(canvasBg);
+  private applyRemoteBg(canvasBg: WireReg) {
+    const remote = asReg(canvasBg);
+    if (!remote) return;
+    if (regWins(this.bgReg, remote)) {
+      this.adoptBg(remote);
+      return;
+    }
+    if (this.bgReg && this.bgReg.text !== remote.text && regWins(remote, this.bgReg)) {
+      this.scheduleRegResend();
+    }
   }
 
-  private applyRemoteScene(incoming: LakarElement[], canvasBg: string) {
+  private adoptBg(remote: Reg) {
+    this.bgReg =
+      remote.version === -1
+        ? bumped(this.bgReg, remote.text)
+        : { ...remote };
+    const s = useStore.getState();
+    if (s.canvasBg !== this.bgReg.text) s.setCanvasBg(this.bgReg.text);
+  }
+
+  private applyRemoteTitle(title: WireReg) {
+    const remote = asReg(title);
+    if (!remote) return;
+    if (regWins(this.titleReg, remote)) {
+      this.adoptTitle(remote);
+      return;
+    }
+    if (
+      this.titleReg &&
+      this.titleReg.text !== remote.text &&
+      regWins(remote, this.titleReg)
+    ) {
+      this.scheduleRegResend();
+    }
+  }
+
+  private scheduleRegResend() {
+    this.regResend = true;
+    this.queueBroadcast();
+  }
+
+  private adoptTitle(remote: Reg) {
+    const text = remote.text.trim().slice(0, 120);
+    if (!text) return;
+    this.titleReg =
+      remote.version === -1
+        ? bumped(this.titleReg, text)
+        : { ...remote, text };
+    const s = useStore.getState();
+    if (s.sceneTitle !== text) s.setSceneTitle(text);
+  }
+
+  private applyRemoteScene(
+    incoming: LakarElement[],
+    canvasBg: WireReg,
+    title?: WireReg | null,
+  ) {
     if (!Array.isArray(incoming)) return;
     const s = useStore.getState();
+    const titleReg = title == null ? null : asReg(title);
+    if (titleReg) this.adoptTitle(titleReg);
+    const bgReg = asReg(canvasBg);
     const wasEmpty = !s.elements.some((el) => !el.isDeleted);
     const { elements, changed } = mergeFullScene(s.elements, incoming);
     if (!changed.size && elements.length === s.elements.length) {
-      this.applyRemoteBg(canvasBg);
+      if (bgReg) this.adoptBg(bgReg);
       return;
     }
     clearShapeCache();
     for (const el of elements) {
       if (changed.has(el.id)) this.sentVersions.set(el.id, el.version);
     }
-    this.lastSentBg = canvasBg;
     s.replaceElements(elements);
-    s.setCanvasBg(canvasBg);
+    if (bgReg) this.adoptBg(bgReg);
     s.clearSelection();
     history.reset();
     if (wasEmpty) zoomToFit();
   }
 
-  private async loadServerSnapshot() {
-    if (!this.roomId || !this.keys) return;
+  private async loadServerSnapshot(): Promise<boolean> {
+    if (!this.roomId || !this.keys) return false;
     try {
       const snapshot = await api.getRoomSnapshot(this.roomId, this.keys.verifier);
       const plain = await decryptString(this.keys.key, snapshot.encData);
       const parsed = parseSceneFile(plain);
-      this.applyRemoteScene(parsed.elements, parsed.canvasBg);
-    } catch {
-      void 0;
+      this.applyRemoteScene(parsed.elements, parsed.canvasBg, parsed.title);
+      return true;
+    } catch (err) {
+      return err instanceof ApiError && err.status === 404;
     }
   }
 
@@ -494,10 +800,16 @@ class CollabManager {
     if (this.unsubscribeStore) return;
     let lastNonce = useStore.getState().sceneNonce;
     let lastBg = useStore.getState().canvasBg;
+    let lastTitle = useStore.getState().sceneTitle;
     this.unsubscribeStore = useStore.subscribe((state) => {
-      if (state.sceneNonce !== lastNonce || state.canvasBg !== lastBg) {
+      if (
+        state.sceneNonce !== lastNonce ||
+        state.canvasBg !== lastBg ||
+        state.sceneTitle !== lastTitle
+      ) {
         lastNonce = state.sceneNonce;
         lastBg = state.canvasBg;
+        lastTitle = state.sceneTitle;
         this.queueBroadcast();
         this.queueSnapshot(SNAPSHOT_DEBOUNCE);
       }
@@ -516,14 +828,20 @@ class CollabManager {
     if (!this.isLive()) return;
     const s = useStore.getState();
     const changed = diffSince(s.elements, this.sentVersions);
-    const bgChanged = s.canvasBg !== this.lastSentBg;
-    if (!changed.length && !bgChanged) return;
+    const title = s.sceneTitle.trim().slice(0, 120);
+    const bgChanged = s.canvasBg !== this.bgReg?.text;
+    const titleChanged = !!title && title !== this.titleReg?.text;
+    const resend = this.regResend;
+    this.regResend = false;
+    if (!changed.length && !bgChanged && !titleChanged && !resend) return;
     for (const el of changed) this.sentVersions.set(el.id, el.version);
-    this.lastSentBg = s.canvasBg;
+    if (bgChanged) this.bgReg = bumped(this.bgReg, s.canvasBg);
+    if (titleChanged) this.titleReg = bumped(this.titleReg, title);
     await this.sendWire({
       k: "update",
       elements: JSON.parse(JSON.stringify(changed)) as LakarElement[],
-      canvasBg: bgChanged ? s.canvasBg : undefined,
+      canvasBg: bgChanged || resend ? this.bgReg ?? undefined : undefined,
+      title: titleChanged || resend ? this.titleReg ?? undefined : undefined,
     });
   }
 
@@ -572,21 +890,45 @@ class CollabManager {
 
   private async uploadSnapshot() {
     if (!this.isLive() || !this.roomId || !this.keys) return;
+    if (!this.sceneReady) return;
     if (!this.isSnapshotLeader()) return;
     const s = useStore.getState();
     try {
-      const doc = serializeScene(s.elements, s.canvasBg);
+      const doc = serializeScene(s.elements, s.canvasBg, s.sceneTitle);
       const encData = await encryptString(this.keys.key, JSON.stringify(doc));
+      if (encData.length > MAX_SNAPSHOT_CHARS) {
+        this.warnSnapshotTooBig();
+        return;
+      }
       await api.putRoomSnapshot(this.roomId, this.keys.verifier, encData);
-    } catch {
-      void 0;
+      this.snapshotWarned = false;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 400) {
+        this.warnSnapshotTooBig();
+      }
     }
+  }
+
+  private warnSnapshotTooBig() {
+    if (this.snapshotWarned) return;
+    this.snapshotWarned = true;
+    useStore
+      .getState()
+      .toast(
+        "This canvas is too big to keep on the server — it now lives only in the browsers of everyone here, so save a copy before you all leave",
+        "error",
+      );
   }
 
   private startSweep() {
     if (this.sweepTimer) return;
     this.sweepTimer = window.setInterval(() => {
       presence.pruneStale();
+      this.pruneChunks();
+      if (!this.sceneReady && !this.askTimer) {
+        this.askedPeers.clear();
+        this.askScene();
+      }
       if (this.socket?.readyState === WebSocket.OPEN) {
         this.socket.send(JSON.stringify({ t: "ping" }));
       }
@@ -599,7 +941,9 @@ class CollabManager {
     if (this.reconnectAttempt >= RECONNECT_DELAYS.length) {
       s.setCollab({ status: "ended" });
       s.toast("Lost the live session — the connection dropped", "error");
-      void this.teardown(false);
+      void this.teardown(false).then(() => {
+        useStore.getState().setDialog("keep-collab-copy");
+      });
       return;
     }
     s.setCollab({ status: "reconnecting" });
@@ -610,7 +954,8 @@ class CollabManager {
       this.peerMeta.clear();
       this.askedPeers.clear();
       this.sentVersions.clear();
-      this.lastSentBg = null;
+      this.bgReg = null;
+      this.titleReg = null;
       void this.connect().catch(() => this.scheduleReconnect());
     }, delay);
   }
@@ -639,27 +984,27 @@ class CollabManager {
   async leave({ silent = false }: { silent?: boolean } = {}) {
     if (!this.roomId) return;
     this.leaving = true;
-    const wasGuest = !this.isHost;
     if (this.isLive()) await this.sendWire({ k: "bye" });
     await this.teardown(true);
-    if (wasGuest) {
-      useStore.getState().setDialog("keep-collab-copy");
-    } else if (!silent) {
-      useStore.getState().toast("Live session ended", "info");
-    }
+    useStore.getState().setDialog("keep-collab-copy");
+    if (silent) return;
+    useStore.getState().toast("You left the live session", "info");
   }
 
   private async teardown(intentional: boolean) {
+    this.generation++;
     this.intentionalClose = intentional;
     if (this.broadcastTimer) window.clearTimeout(this.broadcastTimer);
     if (this.pointerTimer) window.clearTimeout(this.pointerTimer);
     if (this.snapshotTimer) window.clearTimeout(this.snapshotTimer);
     if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
+    if (this.askTimer) window.clearTimeout(this.askTimer);
     if (this.sweepTimer) window.clearInterval(this.sweepTimer);
     this.broadcastTimer = null;
     this.pointerTimer = null;
     this.snapshotTimer = null;
     this.reconnectTimer = null;
+    this.askTimer = null;
     this.sweepTimer = null;
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
@@ -675,9 +1020,16 @@ class CollabManager {
     this.peerMeta.clear();
     this.askedPeers.clear();
     this.sentVersions.clear();
-    this.lastSentBg = null;
+    this.bgReg = null;
+    this.titleReg = null;
+    this.sceneReady = false;
+    this.snapshotWarned = false;
+    this.sceneWarned = false;
+    this.regResend = false;
     this.lastPoint = null;
     this.pointerPending = null;
+    this.inbound.clear();
+    this.servingScene.clear();
     presence.clear();
     clearRoomHash();
     useStore.getState().setCollab(IDLE_COLLAB);
@@ -689,7 +1041,7 @@ class CollabManager {
 
   async keepRoomSceneCopy(title: string) {
     const ok = await syncManager.saveRoomSceneAsCopy(title);
-    await syncManager.exitRoomScene();
+    if (ok) await syncManager.exitRoomScene();
     return ok;
   }
 }

@@ -12,6 +12,13 @@ import { useStore } from "../store";
 import type { SceneMeta } from "../types";
 import { syncManager } from "../sync/manager";
 
+const guardLive = (targetSceneId: string | "new" | null): boolean => {
+  if (!syncManager.inRoomScene()) return false;
+  syncManager.queueSceneAfterRoom(targetSceneId);
+  useStore.getState().setDialog("leave-live-confirm");
+  return true;
+};
+
 const timeAgo = (ts: number) => {
   const diff = Date.now() - ts;
   const mins = Math.floor(diff / 60000);
@@ -59,6 +66,7 @@ export const ScenesDrawer = () => {
   };
 
   const newScene = async () => {
+    if (guardLive("new")) return;
     const id = await syncManager.createScene("Untitled scene", null, true);
     if (id) close();
   };
@@ -313,11 +321,13 @@ const SceneRow = ({
         role="button"
         tabIndex={0}
         onClick={() => {
+          if (guardLive(scene.id)) return;
           void syncManager.openScene(scene.id);
           onOpen();
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
+            if (guardLive(scene.id)) return;
             void syncManager.openScene(scene.id);
             onOpen();
           }

@@ -43,6 +43,7 @@ import {
   saveGuestDoc,
   saveRemoteCache,
   saveRoomDoc,
+  deleteRoomDoc,
   saveSceneDoc,
   deleteSceneDoc,
   storeKeyMaterial,
@@ -70,6 +71,7 @@ class SyncManager {
   private lastOpenSceneId: string | null = null;
   private guestMode = true;
   private roomSceneId: string | null = null;
+  private nextSceneAfterRoom: string | "new" | null = null;
   private beforeRoomSceneId: string | null = null;
 
   private ctx(type: RecordType, id: string): RecordContext {
@@ -380,11 +382,14 @@ class SyncManager {
       this.saveTimer = null;
     }
     const s = useStore.getState();
-    const doc = serializeScene(s.elements, s.canvasBg);
     if (this.roomSceneId) {
-      await saveRoomDoc(this.roomSceneId, doc);
+      await saveRoomDoc(
+        this.roomSceneId,
+        serializeScene(s.elements, s.canvasBg, s.sceneTitle),
+      );
       return;
     }
+    const doc = serializeScene(s.elements, s.canvasBg);
     if (this.guestMode || !s.sceneId) {
       await saveGuestDoc(doc);
       return;
@@ -1120,6 +1125,14 @@ class SyncManager {
     return newRecordId();
   }
 
+  inRoomScene() {
+    return !!this.roomSceneId;
+  }
+
+  queueSceneAfterRoom(id: string | "new" | null) {
+    this.nextSceneAfterRoom = id;
+  }
+
   async enterRoomScene(roomId: string, title: string) {
     const s = useStore.getState();
     await this.flushNow();
@@ -1130,9 +1143,18 @@ class SyncManager {
 
   async exitRoomScene() {
     const s = useStore.getState();
-    const previous = this.beforeRoomSceneId;
+    if (this.roomSceneId) await deleteRoomDoc(this.roomSceneId);
+    const queued = this.nextSceneAfterRoom;
+    const previous =
+      queued && queued !== "new" && s.scenes.some((sc) => sc.id === queued)
+        ? queued
+        : this.beforeRoomSceneId;
     this.roomSceneId = null;
     this.beforeRoomSceneId = null;
+    this.nextSceneAfterRoom = null;
+    if (queued === "new" && (await this.createScene("Untitled scene", null, true))) {
+      return;
+    }
     if (previous && s.scenes.some((sc) => sc.id === previous)) {
       s.setScene(null, s.sceneTitle);
       await this.openScene(previous);

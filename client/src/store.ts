@@ -35,6 +35,7 @@ export type DialogKind =
   | "mermaid"
   | "join"
   | "keep-collab-copy"
+  | "leave-live-confirm"
   | "unlock"
   | "recovery-code"
   | "recover"
