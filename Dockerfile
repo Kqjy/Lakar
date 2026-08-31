@@ -16,6 +16,7 @@ COPY server server
 COPY --from=build /app/client/dist client/dist
 ENV PORT=5191
 ENV DATA_DIR=/data
+RUN mkdir -p /data && chown node:node /data
 VOLUME /data
 EXPOSE 5191
 USER node
