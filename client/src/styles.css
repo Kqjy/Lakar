@@ -604,6 +604,12 @@ select {
 
 .zoom-island .icon-btn { width: 32px; height: 32px; }
 
+.zoom-pop {
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 178px;
+}
+
 .bottom-right {
   position: absolute;
   bottom: 14px;
@@ -881,6 +887,33 @@ select {
 }
 
 .drawer-folder-head:hover { background: var(--bg-hover); }
+
+.scene-row.dragging { opacity: 0.45; }
+
+.drag-ghost {
+  position: fixed;
+  z-index: 200;
+  pointer-events: none;
+  width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-pop);
+}
+
+.drawer-folder.drop-over {
+  outline: 1.5px dashed var(--accent);
+  outline-offset: -1.5px;
+  border-radius: var(--radius-sm);
+}
+
+.drawer-folder.drop-over .drawer-folder-head { background: var(--bg-hover); }
 
 .drawer-folder-head .count {
   margin-left: auto;
@@ -1660,6 +1693,10 @@ select {
     left: 8px;
     gap: 6px;
   }
+  .zoom-pop {
+    top: calc(100% + 8px);
+    bottom: auto;
+  }
   .bottom-right { display: none; }
 
   .toasts { bottom: calc(70px + env(safe-area-inset-bottom)); }
@@ -2335,6 +2372,11 @@ select {
 .peer-tag.away {
   opacity: 0.7;
   font-style: italic;
+}
+
+.peer-tag.host {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .field-hint {

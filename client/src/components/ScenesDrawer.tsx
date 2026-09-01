@@ -23,6 +23,14 @@ const guardLive = (targetSceneId: string | "new" | null): boolean => {
   return true;
 };
 
+const SCENE_DRAG_TYPE = "application/x-lakar-scene";
+
+const blankDragImage = typeof Image !== "undefined" ? new Image() : null;
+if (blankDragImage) {
+  blankDragImage.src =
+    "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+}
+
 const timeAgo = (ts: number) => {
   const diff = Date.now() - ts;
   const mins = Math.floor(diff / 60000);
@@ -50,6 +58,10 @@ export const ScenesDrawer = () => {
   const [sharedCollapsed, setSharedCollapsed] = useState(false);
   const [mineCollapsed, setMineCollapsed] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
+  const [dragSceneId, setDragSceneId] = useState<string | null>(null);
+  const [dropFolderId, setDropFolderId] = useState<string | null>(null);
+  const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
+  const drawerRef = useRef<HTMLElement>(null);
 
   if (dialog !== "scenes") return null;
 
@@ -91,10 +103,49 @@ export const ScenesDrawer = () => {
     if (id) setRenamingFolder(id);
   };
 
+  const endDrag = () => {
+    setDragSceneId(null);
+    setDropFolderId(null);
+    setGhostPos(null);
+  };
+
+  const updateGhost = (e: React.DragEvent) => {
+    const rect = drawerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setGhostPos({
+      x: Math.min(Math.max(e.clientX + 14, rect.left + 8), rect.right - 150),
+      y: Math.min(Math.max(e.clientY + 16, rect.top + 8), rect.bottom - 44),
+    });
+  };
+
+  const isSceneDrag = (e: React.DragEvent) =>
+    e.dataTransfer.types.includes(SCENE_DRAG_TYPE);
+
+  const dropOnFolder = (e: React.DragEvent, folderId: string | null) => {
+    const id = e.dataTransfer.getData(SCENE_DRAG_TYPE);
+    endDrag();
+    if (!id) return;
+    const scene = scenes.find((sc) => sc.id === id);
+    if (!scene || scene.folderId === folderId) return;
+    void syncManager.moveSceneToFolder(id, folderId);
+  };
+
   return (
     <>
       <div className="drawer-backdrop" onPointerDown={close} />
-      <aside className="drawer" aria-label="Your scenes">
+      <aside
+        className="drawer"
+        aria-label="Your scenes"
+        ref={drawerRef}
+        onDragOverCapture={(e) => {
+          if (isSceneDrag(e)) updateGhost(e);
+        }}
+      >
+        {dragSceneId && ghostPos && (
+          <div className="drag-ghost" style={{ left: ghostPos.x, top: ghostPos.y }}>
+            {scenes.find((sc) => sc.id === dragSceneId)?.title ?? ""}
+          </div>
+        )}
         <div className="drawer-header">
           <h2>{user ? "Your scenes" : "Shared canvases"}</h2>
           <button className="icon-btn" onClick={close} aria-label="Close scenes">
@@ -108,7 +159,20 @@ export const ScenesDrawer = () => {
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => e.stopPropagation()}
         />
-        <div className="drawer-list">
+        <div
+          className="drawer-list"
+          onDragOver={(e) => {
+            if (!isSceneDrag(e)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            if (dropFolderId) setDropFolderId(null);
+          }}
+          onDrop={(e) => {
+            if (!isSceneDrag(e)) return;
+            e.preventDefault();
+            dropOnFolder(e, null);
+          }}
+        >
           {shared.length > 0 && (
             <div className="drawer-section">
               <button
@@ -161,14 +225,38 @@ export const ScenesDrawer = () => {
           {(!mineCollapsed || q || shared.length === 0) && (
             <>
               {unfiled.map((sc) => (
-                <SceneRow key={sc.id} scene={sc} current={sc.id === sceneId} onOpen={close} />
+                <SceneRow
+                  key={sc.id}
+                  scene={sc}
+                  current={sc.id === sceneId}
+                  dragging={dragSceneId === sc.id}
+                  onOpen={close}
+                  onDragStart={() => setDragSceneId(sc.id)}
+                  onDragEnd={endDrag}
+                />
               ))}
               {folders.map((f) => {
                 const inside = byFolder.get(f.id) ?? [];
                 if (q && inside.length === 0) return null;
                 const isCollapsed = collapsed.has(f.id) && !q;
                 return (
-                  <div className="drawer-folder" key={f.id}>
+                  <div
+                    className={`drawer-folder ${dropFolderId === f.id ? "drop-over" : ""}`}
+                    key={f.id}
+                    onDragOver={(e) => {
+                      if (!isSceneDrag(e)) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.dataTransfer.dropEffect = "move";
+                      if (dropFolderId !== f.id) setDropFolderId(f.id);
+                    }}
+                    onDrop={(e) => {
+                      if (!isSceneDrag(e)) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      dropOnFolder(e, f.id);
+                    }}
+                  >
                     <FolderHead
                       id={f.id}
                       name={f.name}
@@ -182,7 +270,14 @@ export const ScenesDrawer = () => {
                     {!isCollapsed &&
                       inside.map((sc) => (
                         <div key={sc.id} style={{ paddingLeft: 14 }}>
-                          <SceneRow scene={sc} current={sc.id === sceneId} onOpen={close} />
+                          <SceneRow
+                            scene={sc}
+                            current={sc.id === sceneId}
+                            dragging={dragSceneId === sc.id}
+                            onOpen={close}
+                            onDragStart={() => setDragSceneId(sc.id)}
+                            onDragEnd={endDrag}
+                          />
                         </div>
                       ))}
                   </div>
@@ -510,11 +605,17 @@ const FolderHead = ({
 const SceneRow = ({
   scene,
   current,
+  dragging,
   onOpen,
+  onDragStart,
+  onDragEnd,
 }: {
   scene: SceneMeta;
   current: boolean;
+  dragging?: boolean;
   onOpen: () => void;
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
 }) => {
   const folders = useStore((s) => s.folders);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -569,9 +670,18 @@ const SceneRow = ({
   return (
     <div style={{ position: "relative" }} ref={menuRef}>
       <div
-        className={`scene-row ${current ? "current" : ""}`}
+        className={`scene-row ${current ? "current" : ""} ${dragging ? "dragging" : ""}`}
         role="button"
         tabIndex={0}
+        draggable={!!onDragStart}
+        onDragStart={(e) => {
+          e.dataTransfer.setData(SCENE_DRAG_TYPE, scene.id);
+          e.dataTransfer.setData("text/plain", scene.title);
+          e.dataTransfer.effectAllowed = "move";
+          if (blankDragImage) e.dataTransfer.setDragImage(blankDragImage, 0, 0);
+          onDragStart?.();
+        }}
+        onDragEnd={onDragEnd}
         onClick={() => {
           if (guardLive(scene.id)) return;
           void syncManager.openScene(scene.id);

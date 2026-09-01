@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { getSelectedElements, useStore } from "../store";
 import { copyPNGToClipboard, exportPNG, exportSVG, getExportSize, renderToCanvas } from "../export/image";
+import { saveSceneFile } from "../export/json";
 import { preloadImages } from "../renderer/imageCache";
 import { syncManager } from "../sync/manager";
 import { history } from "../history";
@@ -1372,6 +1373,9 @@ const ShareDialog = () => {
                 </span>
                 <span className="peer-name">{p.name}</span>
                 {p.isSelf && <span className="peer-tag">you</span>}
+                {p.isSelf && collabState.isHost && (
+                  <span className="peer-tag host">host</span>
+                )}
                 {p.away && <span className="peer-tag away">away</span>}
               </li>
             );
@@ -1680,6 +1684,7 @@ const KeepCopyDialog = () => {
   const setDialog = useStore((s) => s.setDialog);
   const setPendingRoomId = useStore((s) => s.setPendingRoomId);
   const toast = useStore((s) => s.toast);
+  const user = useStore((s) => s.user);
   const [title, setTitle] = useState(
     () => useStore.getState().sceneTitle.trim() || "Shared canvas",
   );
@@ -1728,22 +1733,29 @@ const KeepCopyDialog = () => {
     <>
       <h2 className="dialog-title">Keep a copy?</h2>
       <p className="dialog-sub">
-        You left the live session. Save what you were working on, or drop it and
-        go back to your own canvas.
+        {user
+          ? "You left the live session. Save what you were working on, or drop it and go back to your own canvas."
+          : "You left the live session. Download it as a file, or keep drawing on it here — keeping it replaces the canvas you had before you joined."}
         {resume
           ? " Your copy of this canvas stays on this device, so rejoining picks up where you left off instead of starting over."
           : ""}
       </p>
-      <div className="field">
-        <label htmlFor="keep-title">Name for the copy</label>
-        <input
-          id="keep-title"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onKeyDown={(e) => e.stopPropagation()}
-          autoFocus
-        />
-      </div>
+      {user ? (
+        <div className="field">
+          <label htmlFor="keep-title">Name for the copy</label>
+          <input
+            id="keep-title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => e.stopPropagation()}
+            autoFocus
+          />
+        </div>
+      ) : (
+        <p className="field-hint" style={{ margin: 0 }}>
+          Sign in to keep copies in your own library instead.
+        </p>
+      )}
       <div className="dialog-actions">
         {resume && (
           <button
@@ -1776,6 +1788,18 @@ const KeepCopyDialog = () => {
             <Users size={15} /> Rejoin
           </button>
         )}
+        {!user && (
+          <button
+            className="btn btn-outline"
+            disabled={busy}
+            onClick={() => {
+              const s = useStore.getState();
+              saveSceneFile(s.elements, s.canvasBg, title.trim() || "Shared canvas");
+            }}
+          >
+            <Download size={15} /> Save .lakar file
+          </button>
+        )}
         <button
           className="btn btn-primary"
           disabled={busy}
@@ -1793,10 +1817,15 @@ const KeepCopyDialog = () => {
               return;
             }
             setDialog(null);
-            toast("Saved a copy of the shared canvas", "success");
+            toast(
+              user
+                ? "Saved a copy of the shared canvas"
+                : "This is your canvas now",
+              "success",
+            );
           }}
         >
-          Keep it
+          {user ? "Keep it" : "Use as my canvas"}
         </button>
       </div>
     </>
