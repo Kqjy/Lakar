@@ -74,6 +74,7 @@ class SyncManager {
   private guestMode = true;
   private roomSceneId: string | null = null;
   private nextSceneAfterRoom: string | "new" | null = null;
+  private newSceneFolderId: string | null = null;
   private beforeRoomSceneId: string | null = null;
 
   private ctx(type: RecordType, id: string): RecordContext {
@@ -1145,8 +1146,9 @@ class SyncManager {
     return this.roomSceneId;
   }
 
-  queueSceneAfterRoom(id: string | "new" | null) {
+  queueSceneAfterRoom(id: string | "new" | null, folderId: string | null = null) {
     this.nextSceneAfterRoom = id;
+    this.newSceneFolderId = folderId;
   }
 
   async enterRoomScene(roomId: string, title: string) {
@@ -1178,6 +1180,7 @@ class SyncManager {
     this.roomSceneId = null;
     this.beforeRoomSceneId = null;
     this.nextSceneAfterRoom = null;
+    this.newSceneFolderId = null;
     return true;
   }
 
@@ -1187,6 +1190,7 @@ class SyncManager {
       await deleteRoomDoc(this.roomSceneId);
     }
     const queued = this.nextSceneAfterRoom;
+    const queuedFolder = this.newSceneFolderId;
     const previous =
       queued && queued !== "new" && s.scenes.some((sc) => sc.id === queued)
         ? queued
@@ -1194,7 +1198,8 @@ class SyncManager {
     this.roomSceneId = null;
     this.beforeRoomSceneId = null;
     this.nextSceneAfterRoom = null;
-    if (queued === "new" && (await this.createScene("Untitled scene", null, true))) {
+    this.newSceneFolderId = null;
+    if (queued === "new" && (await this.createScene("Untitled scene", queuedFolder, true))) {
       return;
     }
     if (previous && s.scenes.some((sc) => sc.id === previous)) {

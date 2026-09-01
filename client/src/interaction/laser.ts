@@ -9,13 +9,18 @@ interface TrailPoint {
 interface Trail {
   points: TrailPoint[];
   done: boolean;
+  color: string;
+  remote: boolean;
 }
 
 const FADE_MS = 850;
+const REMOTE_STALE_MS = 2000;
 const COLOR = "#e0432d";
+const SELF = "self";
 
 export class LaserManager {
   private trails: Trail[] = [];
+  private current = new Map<string, Trail>();
   private raf = 0;
   private canvas: HTMLCanvasElement | null = null;
   private getViewport: (() => Viewport) | null = null;
@@ -35,24 +40,71 @@ export class LaserManager {
     cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.trails = [];
+    this.current.clear();
     this.canvas = null;
   }
 
   start(p: Point) {
-    this.trails.push({ points: [{ x: p.x, y: p.y, t: performance.now() }], done: false });
-    this.ensureLoop();
+    this.begin(SELF, COLOR, false, p);
   }
 
   move(p: Point) {
-    const trail = this.trails[this.trails.length - 1];
+    const trail = this.current.get(SELF);
     if (trail && !trail.done) {
       trail.points.push({ x: p.x, y: p.y, t: performance.now() });
     }
   }
 
   end() {
-    const trail = this.trails[this.trails.length - 1];
-    if (trail) trail.done = true;
+    this.finish(SELF);
+  }
+
+  remote(id: string, color: string, pts: Point[], done: boolean) {
+    let trail = this.current.get(id);
+    const now = performance.now();
+    for (const p of pts) {
+      if (!trail || trail.done) {
+        trail = { points: [], done: false, color, remote: true };
+        this.trails.push(trail);
+        this.current.set(id, trail);
+      }
+      trail.points.push({ x: p.x, y: p.y, t: now });
+    }
+    if (done) this.finish(id);
+    if (pts.length) this.ensureLoop();
+  }
+
+  clearRemote(id: string) {
+    this.finish(id);
+  }
+
+  clearAllRemote() {
+    for (const [id, trail] of this.current) {
+      if (trail.remote) {
+        trail.done = true;
+        this.current.delete(id);
+      }
+    }
+  }
+
+  private begin(id: string, color: string, remote: boolean, p: Point) {
+    const trail: Trail = {
+      points: [{ x: p.x, y: p.y, t: performance.now() }],
+      done: false,
+      color,
+      remote,
+    };
+    this.trails.push(trail);
+    this.current.set(id, trail);
+    this.ensureLoop();
+  }
+
+  private finish(id: string) {
+    const trail = this.current.get(id);
+    if (trail) {
+      trail.done = true;
+      this.current.delete(id);
+    }
   }
 
   private ensureLoop() {
@@ -70,6 +122,17 @@ export class LaserManager {
 
     const now = performance.now();
     for (const trail of this.trails) {
+      if (
+        trail.remote &&
+        !trail.done &&
+        trail.points.length &&
+        now - trail.points[trail.points.length - 1].t > REMOTE_STALE_MS
+      ) {
+        trail.done = true;
+        for (const [id, t] of this.current) {
+          if (t === trail) this.current.delete(id);
+        }
+      }
       const cutoff = now - FADE_MS;
       const firstFresh = trail.points.findIndex((pt) => pt.t >= cutoff);
       if (firstFresh > 0) trail.points.splice(0, firstFresh);
@@ -88,9 +151,9 @@ export class LaserManager {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.strokeStyle = COLOR;
-    ctx.shadowColor = COLOR;
     for (const trail of this.trails) {
+      ctx.strokeStyle = trail.color;
+      ctx.shadowColor = trail.color;
       const pts = trail.points;
       for (let i = 1; i < pts.length; i++) {
         const k = Math.max(0, 1 - (now - pts[i].t) / FADE_MS);
@@ -108,7 +171,7 @@ export class LaserManager {
         const p = toScreen(pts[0]);
         ctx.globalAlpha = 0.9;
         ctx.shadowBlur = 7;
-        ctx.fillStyle = COLOR;
+        ctx.fillStyle = trail.color;
         ctx.beginPath();
         ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2);
         ctx.fill();
@@ -120,3 +183,5 @@ export class LaserManager {
     if (this.trails.length) this.raf = requestAnimationFrame(this.tick);
   };
 }
+
+export const laserManager = new LaserManager();

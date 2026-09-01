@@ -28,6 +28,7 @@ import {
 } from "../sync/local";
 import { syncManager } from "../sync/manager";
 import { presence } from "./presence";
+import { laserManager } from "../interaction/laser";
 import { diffSince, mergeFullScene, mergeIncoming } from "./reconcile";
 import { clearShapeCache, invalidateShape } from "../renderer/shapes";
 import { parseSceneFile, serializeScene } from "../export/json";
@@ -74,6 +75,7 @@ type Wire =
       tool: ToolType;
       selectedIds: string[];
     }
+  | { k: "laser"; pts: number[]; done?: boolean }
   | {
       k: "update";
       elements: LakarElement[];
@@ -172,6 +174,9 @@ class CollabManager {
   private pointerTimer: number | null = null;
   private pointerPending: Wire | null = null;
   private lastPoint: Point | null = null;
+  private laserPending: number[] = [];
+  private laserDone = false;
+  private laserTimer: number | null = null;
   private snapshotTimer: number | null = null;
   private sweepTimer: number | null = null;
   private unsubscribeStore: (() => void) | null = null;
@@ -434,6 +439,7 @@ class CollabManager {
     this.inbound.clear();
     this.servingScene.clear();
     presence.clear();
+    laserManager.clearAllRemote();
   }
 
   private connect(): Promise<void> {
@@ -620,6 +626,7 @@ class CollabManager {
       if (key.startsWith(`${id}:`)) this.inbound.delete(key);
     }
     presence.remove(id);
+    laserManager.clearRemote(id);
     useStore.getState().setCollab({ peers: this.peerList() });
   }
 
@@ -777,6 +784,25 @@ class CollabManager {
           updatedAt: Date.now(),
           away: meta?.away ?? false,
         });
+        break;
+      }
+      case "laser": {
+        const raw = payload.pts;
+        if (!Array.isArray(raw) || raw.length > 4096) break;
+        const meta = this.peerMeta.get(from);
+        const points: Point[] = [];
+        for (let i = 0; i + 1 < raw.length; i += 2) {
+          const x = raw[i];
+          const y = raw[i + 1];
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          points.push({ x, y });
+        }
+        laserManager.remote(
+          from,
+          meta?.color ?? colorFor(from),
+          points,
+          payload.done === true,
+        );
         break;
       }
       case "focus": {
@@ -1032,6 +1058,47 @@ class CollabManager {
     this.queuePointer();
   }
 
+  onLaserStart(point: Point) {
+    this.pushLaserPoint(point);
+  }
+
+  onLaserMove(point: Point) {
+    this.pushLaserPoint(point);
+  }
+
+  onLaserEnd() {
+    if (!this.isLive()) return;
+    this.laserDone = true;
+    this.scheduleLaserFlush();
+  }
+
+  private pushLaserPoint(point: Point) {
+    if (!this.isLive()) return;
+    if (this.laserDone) this.flushLaser();
+    this.laserPending.push(
+      Math.round(point.x * 10) / 10,
+      Math.round(point.y * 10) / 10,
+    );
+    this.scheduleLaserFlush();
+  }
+
+  private scheduleLaserFlush() {
+    if (this.laserTimer) return;
+    this.laserTimer = window.setTimeout(() => {
+      this.laserTimer = null;
+      this.flushLaser();
+    }, POINTER_INTERVAL);
+  }
+
+  private flushLaser() {
+    const pts = this.laserPending;
+    const done = this.laserDone;
+    this.laserPending = [];
+    this.laserDone = false;
+    if (!pts.length && !done) return;
+    void this.sendWire({ k: "laser", pts, done: done || undefined });
+  }
+
   onSelectionChanged() {
     if (!this.lastPoint) return;
     this.queuePointer();
@@ -1232,6 +1299,10 @@ class CollabManager {
     this.intentionalClose = intentional;
     if (this.broadcastTimer) window.clearTimeout(this.broadcastTimer);
     if (this.pointerTimer) window.clearTimeout(this.pointerTimer);
+    if (this.laserTimer) window.clearTimeout(this.laserTimer);
+    this.laserTimer = null;
+    this.laserPending = [];
+    this.laserDone = false;
     if (this.snapshotTimer) window.clearTimeout(this.snapshotTimer);
     if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
     if (this.askTimer) window.clearTimeout(this.askTimer);
@@ -1275,6 +1346,7 @@ class CollabManager {
     this.inbound.clear();
     this.servingScene.clear();
     presence.clear();
+    laserManager.clearAllRemote();
     clearRoomHash();
     useStore.getState().setCollab(IDLE_COLLAB);
   }

@@ -16,9 +16,12 @@ import { syncManager } from "../sync/manager";
 import { collab, CollabError } from "../collab/manager";
 import { ApiError } from "../sync/api";
 
-const guardLive = (targetSceneId: string | "new" | null): boolean => {
+const guardLive = (
+  targetSceneId: string | "new" | null,
+  newFolderId: string | null = null,
+): boolean => {
   if (!collab.isLive()) return false;
-  syncManager.queueSceneAfterRoom(targetSceneId);
+  syncManager.queueSceneAfterRoom(targetSceneId, newFolderId);
   useStore.getState().setDialog("leave-live-confirm");
   return true;
 };
@@ -95,6 +98,12 @@ export const ScenesDrawer = () => {
   const newScene = async () => {
     if (guardLive("new")) return;
     const id = await syncManager.createScene("Untitled scene", null, true);
+    if (id) close();
+  };
+
+  const newSceneIn = async (folderId: string) => {
+    if (guardLive("new", folderId)) return;
+    const id = await syncManager.createScene("Untitled scene", folderId, true);
     if (id) close();
   };
 
@@ -266,6 +275,7 @@ export const ScenesDrawer = () => {
                       onToggle={() => toggleFolder(f.id)}
                       onRenameStart={() => setRenamingFolder(f.id)}
                       onRenameEnd={() => setRenamingFolder(null)}
+                      onNewScene={() => void newSceneIn(f.id)}
                     />
                     {!isCollapsed &&
                       inside.map((sc) => (
@@ -499,6 +509,7 @@ const FolderHead = ({
   onToggle,
   onRenameStart,
   onRenameEnd,
+  onNewScene,
 }: {
   id: string;
   name: string;
@@ -508,6 +519,7 @@ const FolderHead = ({
   onToggle: () => void;
   onRenameStart: () => void;
   onRenameEnd: () => void;
+  onNewScene: () => void;
 }) => {
   const [draft, setDraft] = useState(name);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -578,6 +590,15 @@ const FolderHead = ({
       </button>
       {menuOpen && (
         <div className="menu-pop" style={{ right: 0, top: "100%" }}>
+          <button
+            className="menu-item"
+            onClick={() => {
+              setMenuOpen(false);
+              onNewScene();
+            }}
+          >
+            New scene in folder
+          </button>
           <button
             className="menu-item"
             onClick={() => {

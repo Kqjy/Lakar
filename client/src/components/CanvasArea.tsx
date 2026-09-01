@@ -21,7 +21,7 @@ import {
   nextFrameName,
   refreshFrameMembership,
 } from "../frames";
-import { LaserManager } from "../interaction/laser";
+import { laserManager } from "../interaction/laser";
 import {
   currentSlide,
   nextSlide,
@@ -164,7 +164,6 @@ export const CanvasArea = () => {
   const spaceRef = useRef(false);
   const renderScheduled = useRef(0);
   const lastPointerRef = useRef<Point>({ x: 0, y: 0 });
-  const laserMgrRef = useRef<LaserManager | null>(null);
   const bindHighlightRef = useRef<string | null>(null);
   const snapGuidesRef = useRef<SnapGuide[]>([]);
   const pointersRef = useRef(
@@ -331,17 +330,12 @@ export const CanvasArea = () => {
   }, []);
 
   useEffect(() => {
-    const mgr = new LaserManager();
-    laserMgrRef.current = mgr;
-    mgr.attach(
+    laserManager.attach(
       laserRef.current!,
       () => useStore.getState().viewport,
       () => sizeRef.current,
     );
-    return () => {
-      mgr.detach();
-      laserMgrRef.current = null;
-    };
+    return () => laserManager.detach();
   }, []);
 
   useEffect(() => {
@@ -570,7 +564,10 @@ export const CanvasArea = () => {
         s.bumpScene();
       }
       if (session.kind === "erasing") s.setPendingErase([]);
-      if (session.kind === "laser") laserMgrRef.current?.end();
+      if (session.kind === "laser") {
+        laserManager.end();
+        collab.onLaserEnd();
+      }
     }
     sessionRef.current = null;
     snapGuidesRef.current = [];
@@ -907,7 +904,8 @@ export const CanvasArea = () => {
 
     if (tool === "laser") {
       e.preventDefault();
-      laserMgrRef.current?.start(p);
+      laserManager.start(p);
+      collab.onLaserStart(p);
       sessionRef.current = { kind: "laser" };
       return;
     }
@@ -1455,7 +1453,8 @@ export const CanvasArea = () => {
         break;
       }
       case "laser": {
-        laserMgrRef.current?.move(p);
+        laserManager.move(p);
+        collab.onLaserMove(p);
         break;
       }
     }
@@ -1551,7 +1550,8 @@ export const CanvasArea = () => {
         scheduleRender();
         break;
       case "laser": {
-        laserMgrRef.current?.end();
+        laserManager.end();
+        collab.onLaserEnd();
         break;
       }
       case "erasing": {
