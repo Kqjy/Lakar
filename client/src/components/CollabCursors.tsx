@@ -15,6 +15,7 @@ const TOOL_LABEL: Partial<Record<string, string>> = {
   frame: "framing",
   eraser: "erasing",
   laser: "pointing",
+  bucket: "filling",
 };
 
 const EDGE_INSET = 22;

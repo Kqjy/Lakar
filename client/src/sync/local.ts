@@ -30,7 +30,7 @@ export interface CachedRemoteState {
     updatedAt: number;
     dirty: boolean;
   }[];
-  folders: { id: string; name: string; createdAt: number }[];
+  folders: { id: string; name: string; color?: string | null; createdAt: number }[];
   lastOpenSceneId: string | null;
 }
 

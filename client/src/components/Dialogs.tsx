@@ -266,6 +266,7 @@ const SHORTCUTS: [string, string][] = [
   ["Text", "T or 8"],
   ["Frame", "F"],
   ["Laser pointer", "K"],
+  ["Fill", "B"],
   ["Eraser", "E or 0"],
   ["Insert image", "9"],
   ["Open the Satchel", "S"],

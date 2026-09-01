@@ -136,6 +136,29 @@ export const getElementAtPosition = (
   return null;
 };
 
+export const getFillableAtPosition = (
+  elements: readonly LakarElement[],
+  scenePoint: Point,
+  zoom: number,
+): LakarElement | null => {
+  for (let i = elements.length - 1; i >= 0; i--) {
+    const el = elements[i];
+    if (el.isDeleted || el.locked) continue;
+    if (
+      el.type !== "rectangle" &&
+      el.type !== "diamond" &&
+      el.type !== "ellipse" &&
+      el.type !== "line"
+    ) {
+      continue;
+    }
+    if (hitTestElement({ ...el, backgroundColor: "#000" }, scenePoint, zoom)) {
+      return el;
+    }
+  }
+  return null;
+};
+
 export const getTextAtPosition = (
   elements: readonly LakarElement[],
   scenePoint: Point,

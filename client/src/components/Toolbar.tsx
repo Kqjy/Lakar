@@ -11,6 +11,7 @@ import {
   Minus,
   MousePointer2,
   MoveUpRight,
+  PaintBucket,
   Pencil,
   Square,
   Type,
@@ -32,6 +33,7 @@ const TOOLS: { tool: ToolType; icon: React.ReactNode; label: string; hint: strin
   { tool: "text", icon: <Type size={18} />, label: "Text", hint: "8", title: "Text — T or 8" },
   { tool: "frame", icon: <Frame size={18} />, label: "Frame", hint: "F", title: "Frame — F" },
   { tool: "laser", icon: <Wand size={18} />, label: "Laser pointer", hint: "K", title: "Laser pointer — K" },
+  { tool: "bucket", icon: <PaintBucket size={18} />, label: "Fill", hint: "B", title: "Fill — B" },
   { tool: "eraser", icon: <Eraser size={18} />, label: "Eraser", hint: "0", title: "Eraser — E or 0" },
 ];
 

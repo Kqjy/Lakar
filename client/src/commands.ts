@@ -40,6 +40,7 @@ const TOOL_LABELS: [ToolType, string][] = [
   ["text", "Text"],
   ["frame", "Frame"],
   ["laser", "Laser pointer"],
+  ["bucket", "Fill"],
   ["eraser", "Eraser"],
 ];
 

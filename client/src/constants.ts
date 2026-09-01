@@ -82,6 +82,7 @@ export const TOOL_SHORTCUTS: Record<string, ToolType> = {
   "8": "text",
   f: "frame",
   k: "laser",
+  b: "bucket",
   e: "eraser",
   "0": "eraser",
 };

@@ -60,6 +60,7 @@ import {
   getContainerAtPosition,
   getElementAtPosition,
   getElementsInBounds,
+  getFillableAtPosition,
   getTextAtPosition,
   hitTestElement,
 } from "../hitTest";
@@ -1061,6 +1062,23 @@ export const CanvasArea = () => {
     if (tool === "eraser") {
       sessionRef.current = { kind: "erasing", last: p };
       eraseAt(p, null);
+      return;
+    }
+
+    if (tool === "bucket") {
+      e.preventDefault();
+      const target = getFillableAtPosition(s.elements, p, s.viewport.zoom);
+      if (target) {
+        const { backgroundColor, fillStyle } = s.itemDefaults;
+        if (
+          target.backgroundColor !== backgroundColor ||
+          target.fillStyle !== fillStyle
+        ) {
+          mutateElement(target, { backgroundColor, fillStyle });
+          s.bumpScene();
+          history.commit();
+        }
+      }
       return;
     }
 

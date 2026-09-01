@@ -28,6 +28,18 @@ const guardLive = (
 
 const SCENE_DRAG_TYPE = "application/x-lakar-scene";
 
+const FOLDER_COLORS = [
+  "#e03131",
+  "#f08c00",
+  "#2f9e44",
+  "#0c8599",
+  "#1971c2",
+  "#9c36b5",
+];
+
+const folderIconStyle = (color: string | null | undefined) =>
+  color ? { color, fill: color, fillOpacity: 0.22 } : undefined;
+
 const blankDragImage = typeof Image !== "undefined" ? new Image() : null;
 if (blankDragImage) {
   blankDragImage.src =
@@ -269,6 +281,7 @@ export const ScenesDrawer = () => {
                     <FolderHead
                       id={f.id}
                       name={f.name}
+                      color={f.color}
                       count={inside.length}
                       collapsed={isCollapsed}
                       renaming={renamingFolder === f.id}
@@ -503,6 +516,7 @@ const SharedRow = ({
 const FolderHead = ({
   id,
   name,
+  color,
   count,
   collapsed,
   renaming,
@@ -513,6 +527,7 @@ const FolderHead = ({
 }: {
   id: string;
   name: string;
+  color: string | null;
   count: number;
   collapsed: boolean;
   renaming: boolean;
@@ -569,7 +584,7 @@ const FolderHead = ({
     <div style={{ position: "relative" }} ref={menuRef}>
       <button className="drawer-folder-head" onClick={onToggle}>
         {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-        <Folder size={14} />
+        <Folder size={14} style={folderIconStyle(color)} />
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {name}
         </span>
@@ -608,6 +623,26 @@ const FolderHead = ({
           >
             Rename folder
           </button>
+          <div className="menu-heading">Folder color</div>
+          <div className="menu-swatch-row">
+            <button
+              className={`swatch transparent ${!color ? "selected" : ""}`}
+              title="No color"
+              aria-label="No folder color"
+              onClick={() => void syncManager.setFolderColor(id, null)}
+            />
+            {FOLDER_COLORS.map((c) => (
+              <button
+                key={c}
+                className={`swatch ${color === c ? "selected" : ""}`}
+                style={{ background: c }}
+                title={c}
+                aria-label={`Folder color ${c}`}
+                onClick={() => void syncManager.setFolderColor(id, c)}
+              />
+            ))}
+          </div>
+          <div className="menu-sep" />
           <button
             className="menu-item danger"
             onClick={() => {
@@ -760,7 +795,7 @@ const SceneRow = ({
                     void syncManager.moveSceneToFolder(scene.id, f.id);
                   }}
                 >
-                  <Folder size={14} /> {f.name}
+                  <Folder size={14} style={folderIconStyle(f.color)} /> {f.name}
                 </button>
               ))}
             </>

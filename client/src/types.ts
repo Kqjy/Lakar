@@ -10,10 +10,11 @@ export type ToolType =
   | "text"
   | "frame"
   | "laser"
+  | "bucket"
   | "eraser";
 
 export type ElementType =
-  | Exclude<ToolType, "selection" | "hand" | "eraser" | "laser">
+  | Exclude<ToolType, "selection" | "hand" | "eraser" | "laser" | "bucket">
   | "image";
 
 export type FillStyle = "hachure" | "cross-hatch" | "solid";
@@ -200,6 +201,7 @@ export interface SceneMeta {
 export interface FolderMeta {
   id: string;
   name: string;
+  color: string | null;
   createdAt: number;
 }
 

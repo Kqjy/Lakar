@@ -65,11 +65,12 @@ export const PropertiesPanel = () => {
   const selected = getSelectedElements();
   const hasSelection = selected.length > 0 && activeTool === "selection";
   const toolType = TYPE_FOR_TOOL[activeTool];
+  const isBucket = activeTool === "bucket";
 
-  if (!hasSelection && !toolType) return null;
+  if (!hasSelection && !toolType && !isBucket) return null;
 
   const types = new Set(
-    hasSelection ? selected.map((el) => el.type) : [toolType!],
+    hasSelection ? selected.map((el) => el.type) : toolType ? [toolType] : [],
   );
   const has = (...ts: string[]) => ts.some((t) => types.has(t));
 
@@ -98,7 +99,7 @@ export const PropertiesPanel = () => {
   const showStroke = has(
     "rectangle", "diamond", "ellipse", "arrow", "line", "freedraw", "text",
   );
-  const showBackground = has("rectangle", "diamond", "ellipse", "line");
+  const showBackground = isBucket || has("rectangle", "diamond", "ellipse", "line");
   const showFill =
     showBackground && value("backgroundColor") !== "transparent";
   const showStrokeWidth = has(

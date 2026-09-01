@@ -61,6 +61,26 @@ const newRecordId = () => crypto.randomUUID();
 const isQuotaError = (err: unknown) =>
   err instanceof ApiError && err.status === 413 && err.code === "quota-exceeded";
 
+const encodeFolderName = (name: string, color: string | null) =>
+  color ? JSON.stringify({ n: name, c: color }) : name;
+
+const decodeFolderName = (raw: string): { name: string; color: string | null } => {
+  if (raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw) as { n?: unknown; c?: unknown };
+      if (parsed && typeof parsed.n === "string") {
+        return {
+          name: parsed.n,
+          color: typeof parsed.c === "string" ? parsed.c : null,
+        };
+      }
+    } catch {
+      void 0;
+    }
+  }
+  return { name: raw, color: null };
+};
+
 class SyncManager {
   private userId: string | null = null;
   private ark: CryptoKey | null = null;
@@ -229,7 +249,14 @@ class SyncManager {
         }),
       ),
     );
-    s.setFolders(cache.folders.map((f) => ({ id: f.id, name: f.name, createdAt: f.createdAt })));
+    s.setFolders(
+      cache.folders.map((f) => ({
+        id: f.id,
+        name: f.name,
+        color: f.color ?? null,
+        createdAt: f.createdAt,
+      })),
+    );
     this.lastOpenSceneId = cache.lastOpenSceneId;
     for (const sc of cache.scenes) {
       if (sc.dirty) this.pendingPush.add(sc.id);
@@ -252,6 +279,7 @@ class SyncManager {
       folders: s.folders.map((f) => ({
         id: f.id,
         name: f.name,
+        color: f.color,
         createdAt: f.createdAt,
       })),
       lastOpenSceneId: s.sceneId ?? this.lastOpenSceneId,
@@ -294,12 +322,14 @@ class SyncManager {
     const folderMetas = [];
     for (const f of folders) {
       let name = "(cannot decrypt)";
+      let color: string | null = null;
       try {
-        name = await decryptRecord(this.ring, this.ctx("folderName", f.id), f.encName);
+        const raw = await decryptRecord(this.ring, this.ctx("folderName", f.id), f.encName);
+        ({ name, color } = decodeFolderName(raw));
       } catch {
         void 0;
       }
-      folderMetas.push({ id: f.id, name, createdAt: f.createdAt });
+      folderMetas.push({ id: f.id, name, color, createdAt: f.createdAt });
     }
     folderMetas.sort((a, b) => a.name.localeCompare(b.name));
     s.setScenes(metas);
@@ -1046,7 +1076,7 @@ class SyncManager {
       const encName = await encryptRecord(this.ring, this.ctx("folderName", id), name);
       const res = await api.createFolder(encName, id);
       s.setFolders(
-        [...s.folders, { id: res.id, name, createdAt: res.createdAt }].sort(
+        [...s.folders, { id: res.id, name, color: null, createdAt: res.createdAt }].sort(
           (a, b) => a.name.localeCompare(b.name),
         ),
       );
@@ -1061,17 +1091,41 @@ class SyncManager {
   async renameFolder(id: string, name: string) {
     const s = useStore.getState();
     if (!this.ring) return;
+    const color = s.folders.find((f) => f.id === id)?.color ?? null;
     s.setFolders(
       s.folders
         .map((f) => (f.id === id ? { ...f, name } : f))
         .sort((a, b) => a.name.localeCompare(b.name)),
     );
     try {
-      const encName = await encryptRecord(this.ring, this.ctx("folderName", id), name);
+      const encName = await encryptRecord(
+        this.ring,
+        this.ctx("folderName", id),
+        encodeFolderName(name, color),
+      );
       await api.renameFolder(id, encName);
       await this.persistCache();
     } catch {
       s.toast("Rename will sync when you're back online", "info");
+    }
+  }
+
+  async setFolderColor(id: string, color: string | null) {
+    const s = useStore.getState();
+    if (!this.ring) return;
+    const folder = s.folders.find((f) => f.id === id);
+    if (!folder || folder.color === color) return;
+    s.setFolders(s.folders.map((f) => (f.id === id ? { ...f, color } : f)));
+    try {
+      const encName = await encryptRecord(
+        this.ring,
+        this.ctx("folderName", id),
+        encodeFolderName(folder.name, color),
+      );
+      await api.renameFolder(id, encName);
+      await this.persistCache();
+    } catch {
+      s.toast("Color will sync when you're back online", "info");
     }
   }
 
