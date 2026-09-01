@@ -392,11 +392,14 @@ class SyncManager {
       return;
     }
     const doc = serializeScene(s.elements, s.canvasBg);
-    if (this.guestMode || !s.sceneId) {
+    if (this.guestMode) {
       await saveGuestDoc(doc);
       return;
     }
     const id = s.sceneId;
+    if (!id) return;
+    const prev = await loadSceneDoc(id);
+    if (prev && JSON.stringify(prev) === JSON.stringify(doc)) return;
     await saveSceneDoc(id, doc);
     this.updateMeta(id, { dirty: true, updatedAt: Date.now() });
     this.pendingPush.add(id);
@@ -534,6 +537,13 @@ class SyncManager {
         this.ctx("scene", id),
         remote.encData,
       );
+      if (JSON.stringify(remoteDoc) === JSON.stringify(localDoc)) {
+        await saveSceneDoc(id, remoteDoc);
+        this.pendingPush.delete(id);
+        this.updateMeta(id, { remoteVersion: remote.version, dirty: false });
+        s.setSyncStatus("synced");
+        return;
+      }
       const meta = s.scenes.find((sc) => sc.id === id);
       const conflictTitle = `${meta?.title ?? "Scene"} (conflict copy)`;
       const copyId = newRecordId();
@@ -1157,10 +1167,6 @@ class SyncManager {
     this.applyDocument(doc, true);
     history.reset();
     return true;
-  }
-
-  hasQueuedSceneAfterRoom() {
-    return this.nextSceneAfterRoom !== null;
   }
 
   async releaseRoomScene(): Promise<boolean> {

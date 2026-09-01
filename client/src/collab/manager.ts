@@ -332,7 +332,7 @@ class CollabManager {
 
   async rejoin(resume: RoomResume): Promise<void> {
     if (this.roomId && this.roomId !== resume.roomId) {
-      await this.leave({ silent: true });
+      await this.leave({ silent: true, keepScene: true });
     }
     try {
       await this.join(resume.roomId, resume.secret, "");
@@ -408,6 +408,21 @@ class CollabManager {
 
   async forgetSavedSession(roomId: string) {
     await this.forgetRoom(roomId);
+  }
+
+  async endSavedSession(room: RoomResume): Promise<boolean> {
+    if (!room.ownerToken || this.roomId === room.roomId) return false;
+    try {
+      await api.endRoom(room.roomId, room.ownerToken);
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.status !== 404) {
+        useStore.getState().toast("Could not end the session", "error");
+        return false;
+      }
+    }
+    await this.forgetRoom(room.roomId);
+    useStore.getState().toast("Session ended for everyone", "info");
+    return true;
   }
 
   private resetOutbound() {
@@ -1186,7 +1201,8 @@ class CollabManager {
   async leave({
     silent = false,
     forget = false,
-  }: { silent?: boolean; forget?: boolean } = {}) {
+    keepScene = false,
+  }: { silent?: boolean; forget?: boolean; keepScene?: boolean } = {}) {
     if (!this.roomId) return;
     this.leaving = true;
     try {
@@ -1196,22 +1212,17 @@ class CollabManager {
       void 0;
     }
     if (this.isLive()) await this.sendWire({ k: "bye" });
-    const queued = syncManager.hasQueuedSceneAfterRoom();
     await this.teardown(true);
     if (forget) {
       useStore.getState().setDialog("keep-collab-copy");
       return;
     }
-    if (queued) {
-      await syncManager.exitRoomScene();
-      if (!silent) useStore.getState().toast("You left the live session", "info");
-      return;
-    }
+    if (!keepScene) await syncManager.exitRoomScene();
     if (silent) return;
     useStore
       .getState()
       .toast(
-        "You left the live session — this canvas stays under Shared canvases",
+        "You left the live session — it stays under Shared canvases if you want to rejoin",
         "info",
       );
   }

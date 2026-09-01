@@ -640,6 +640,11 @@ select {
   animation: dialog-in 0.16s cubic-bezier(0.2, 0.9, 0.3, 1.2);
 }
 
+@supports (height: 100dvh) {
+  .dialog { max-height: calc(100dvh - 48px); }
+  .palette-list { max-height: min(420px, 46dvh); }
+}
+
 @keyframes dialog-in {
   from {
     opacity: 0;
@@ -1228,23 +1233,38 @@ select {
   font-size: 10px;
 }
 
-.peer-list {
+.peer-chips {
   list-style: none;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 6px 0 2px;
-  max-height: 168px;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 2px;
+  padding: 0;
+  max-height: 132px;
   overflow-y: auto;
 }
 
-.peer-list li {
-  display: flex;
+.peer-chip {
+  display: inline-flex;
   align-items: center;
-  gap: 9px;
-  padding: 6px 4px;
-  font-size: 13.5px;
+  gap: 7px;
+  padding: 4px 10px 4px 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12.5px;
+  max-width: 100%;
 }
+
+.peer-chip .peer-avatar {
+  width: 20px;
+  height: 20px;
+  border: none;
+  font-size: 9.5px;
+}
+
+.peer-chip .peer-name { max-width: 130px; }
+
+.peer-chip .peer-tag { margin-left: 2px; }
 
 .peer-name {
   overflow: hidden;
@@ -1266,6 +1286,16 @@ select {
   gap: 8px;
   margin-bottom: 15px;
 }
+
+.live-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.live-fields .field { margin-bottom: 0; min-width: 0; }
+
+.live-fields .field input { min-width: 0; }
 
 .share-link {
   flex: 1;
@@ -1582,15 +1612,58 @@ select {
 }
 
 @media (max-width: 760px) {
+  .top-left { top: 8px; left: 8px; }
+  .top-right { top: 8px; right: 8px; gap: 6px; }
+  .scene-chip { display: none; }
+
+  .toolbar {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: none;
+    transform: none;
+    overflow-x: auto;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    padding: 5px 8px calc(5px + env(safe-area-inset-bottom));
+    scrollbar-width: none;
+  }
+  .toolbar::-webkit-scrollbar { display: none; }
+  .toolbar > :first-child { margin-left: auto; }
+  .toolbar > :last-child { margin-right: auto; }
+  .toolbar > * { flex-shrink: 0; }
+  .tool-btn .key-hint { display: none; }
+
   .props-panel {
     top: auto;
-    bottom: 72px;
+    bottom: calc(57px + env(safe-area-inset-bottom));
     left: 8px;
-    width: 200px;
-    max-height: 46vh;
+    right: 8px;
+    width: auto;
+    max-height: 42vh;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 14px;
+    align-content: start;
   }
-  .scene-chip { display: none; }
-  .toolbar { max-width: calc(100vw - 16px); overflow-x: auto; }
+  .prop-section { min-width: 0; }
+  .swatch-row { flex-wrap: wrap; gap: 4px; }
+  .swatch { width: 22px; height: 22px; }
+
+  .zoom-bar {
+    top: 62px;
+    bottom: auto;
+    left: 8px;
+    gap: 6px;
+  }
+  .bottom-right { display: none; }
+
+  .toasts { bottom: calc(70px + env(safe-area-inset-bottom)); }
+
   .share-btn span,
   .share-btn { gap: 0; padding: 0 11px; font-size: 0; }
   .share-btn svg { font-size: 13px; }
@@ -2246,19 +2319,16 @@ select {
   border-left: 6px solid currentColor;
 }
 
-.peer-list li.away .peer-avatar,
-.peer-list li.away .peer-name {
+.peer-chip.away .peer-avatar,
+.peer-chip.away .peer-name {
   opacity: 0.5;
 }
 
 .peer-stack .peer-avatar.away { opacity: 0.45; }
 
-.peer-list li.locatable {
-  cursor: pointer;
-  border-radius: 7px;
-}
+.peer-chip.locatable { cursor: pointer; }
 
-.peer-list li.locatable:hover {
+.peer-chip.locatable:hover {
   background: var(--surface-hover, rgba(127, 127, 127, 0.12));
 }
 
@@ -2343,12 +2413,41 @@ select {
 .drawer-section { margin-bottom: 10px; }
 
 .drawer-section-head {
-  padding: 2px 4px 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 4px 4px 6px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-faint);
+}
+
+.drawer-section-head:hover { color: var(--text-dim); }
+
+.drawer-section-head .count {
+  margin-left: auto;
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+.drawer-footer-anon {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.anon-note {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
 }
 
 .shared-dot {

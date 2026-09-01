@@ -1278,10 +1278,9 @@ const ShareDialog = () => {
         <h2 className="dialog-title">Live session</h2>
         <p className="dialog-sub">
           {collabState.mode === "password"
-            ? "Anyone with the link and the password can draw here together with you."
-            : "Anyone with this link can draw here together with you."}{" "}
-          The session belongs to everyone in it — leaving keeps it running for
-          the rest.
+            ? "Anyone with the link and the password can draw here with you."
+            : "Anyone with this link can draw here with you."}{" "}
+          Leaving keeps the session running for the rest.
         </p>
         <div className="share-link-row">
           <input
@@ -1312,45 +1311,44 @@ const ShareDialog = () => {
             </span>
           </div>
         )}
-        <div className="field" style={{ marginTop: 12 }}>
-          <label htmlFor="live-display-name">Your name in the session</label>
-          <input
-            id="live-display-name"
-            value={displayName}
-            maxLength={40}
-            onChange={(e) => setDisplayName(e.target.value)}
-            onKeyDown={(e) => e.stopPropagation()}
-          />
-          <p className="field-hint">
-            Everyone here sees this change straight away.
-          </p>
+        <div className="live-fields">
+          <div className="field">
+            <label htmlFor="live-display-name">Your name</label>
+            <input
+              id="live-display-name"
+              value={displayName}
+              maxLength={40}
+              onChange={(e) => setDisplayName(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="session-name">Session name</label>
+            <input
+              id="session-name"
+              value={nameDraft}
+              maxLength={120}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={commitName}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                if (e.key === "Escape") {
+                  setNameDraft(sceneTitle);
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+            />
+          </div>
         </div>
-        <div className="field" style={{ marginTop: 12 }}>
-          <label htmlFor="session-name">Session name</label>
-          <input
-            id="session-name"
-            value={nameDraft}
-            maxLength={120}
-            onChange={(e) => setNameDraft(e.target.value)}
-            onBlur={commitName}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-              if (e.key === "Escape") {
-                setNameDraft(sceneTitle);
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
-          />
-          <p className="field-hint">
-            Everyone in the session sees this name, and it renames the canvas
-            for them too.
-          </p>
-        </div>
-        <div className="prop-label" style={{ marginTop: 4 }}>
+        <p className="field-hint" style={{ margin: "6px 0 0" }}>
+          Everyone sees name changes straight away — the session name renames
+          the canvas for all.
+        </p>
+        <div className="prop-label" style={{ marginTop: 14 }}>
           In this session — {collabState.peers.length}
         </div>
-        <ul className="peer-list">
+        <ul className="peer-chips">
           {collabState.peers.map((p) => {
             const at = p.isSelf
               ? null
@@ -1358,8 +1356,8 @@ const ShareDialog = () => {
             return (
               <li
                 key={p.id}
-                className={`${p.away ? "away" : ""} ${at ? "locatable" : ""}`}
-                title={at ? `Jump to ${p.name}` : undefined}
+                className={`peer-chip ${p.away ? "away" : ""} ${at ? "locatable" : ""}`}
+                title={at ? `Jump to ${p.name}` : p.away ? `${p.name} — away` : undefined}
                 onClick={
                   at
                     ? () => {
@@ -1390,6 +1388,7 @@ const ShareDialog = () => {
               setBusy(true);
               await collab.leave();
               setBusy(false);
+              setDialog(null);
             }}
           >
             <LogOut size={15} /> Leave session
@@ -1838,6 +1837,7 @@ const LeaveLiveDialog = () => {
           onClick={async () => {
             setBusy(true);
             await collab.leave({ silent: true });
+            setDialog(null);
           }}
         >
           Leave session

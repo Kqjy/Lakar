@@ -76,7 +76,14 @@ const request = async <T>(
   try {
     data = await res.json();
   } catch {
-    throw new ApiError(res.status, "bad-response", "Invalid server response");
+    if (res.status >= 500) {
+      throw new ApiError(0, "network", "The server is unreachable right now — try again in a moment");
+    }
+    throw new ApiError(
+      res.status,
+      "bad-response",
+      "The server sent an unexpected response — it may be restarting",
+    );
   }
   if (!res.ok) {
     throw new ApiError(

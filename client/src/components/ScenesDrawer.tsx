@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
+  CloudOff,
   FilePlus2,
   Folder,
   FolderPlus,
   MoreHorizontal,
+  UsersRound,
   X,
 } from "lucide-react";
 import { useStore } from "../store";
@@ -45,11 +47,14 @@ export const ScenesDrawer = () => {
   const liveStatus = useStore((s) => s.collab.status);
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [sharedCollapsed, setSharedCollapsed] = useState(false);
+  const [mineCollapsed, setMineCollapsed] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
 
   if (dialog !== "scenes") return null;
 
   const close = () => setDialog(null);
+  const live = liveStatus !== "idle" && liveStatus !== "ended";
   const q = search.trim().toLowerCase();
   const currentRoomId = syncManager.currentRoomSceneId();
   const shared = sharedRooms.filter(
@@ -106,20 +111,29 @@ export const ScenesDrawer = () => {
         <div className="drawer-list">
           {shared.length > 0 && (
             <div className="drawer-section">
-              <div className="drawer-section-head">Shared canvases</div>
-              {shared.map((room) => (
-                <SharedRow
-                  key={room.roomId}
-                  room={room}
-                  live={
-                    liveRoomId === room.roomId &&
-                    liveStatus !== "idle" &&
-                    liveStatus !== "ended"
-                  }
-                  current={currentRoomId === room.roomId}
-                  onOpen={close}
-                />
-              ))}
+              <button
+                className="drawer-section-head"
+                aria-expanded={!sharedCollapsed || !!q}
+                onClick={() => setSharedCollapsed(!sharedCollapsed)}
+              >
+                {sharedCollapsed && !q ? (
+                  <ChevronRight size={13} />
+                ) : (
+                  <ChevronDown size={13} />
+                )}
+                Shared canvases
+                <span className="count">{shared.length}</span>
+              </button>
+              {(!sharedCollapsed || q) &&
+                shared.map((room) => (
+                  <SharedRow
+                    key={room.roomId}
+                    room={room}
+                    live={live && liveRoomId === room.roomId}
+                    current={currentRoomId === room.roomId}
+                    onOpen={close}
+                  />
+                ))}
             </div>
           )}
           {user && scenes.length === 0 && (
@@ -129,36 +143,55 @@ export const ScenesDrawer = () => {
               leaves this device.
             </div>
           )}
-          {unfiled.map((sc) => (
-            <SceneRow key={sc.id} scene={sc} current={sc.id === sceneId} onOpen={close} />
-          ))}
-          {folders.map((f) => {
-            const inside = byFolder.get(f.id) ?? [];
-            if (q && inside.length === 0) return null;
-            const isCollapsed = collapsed.has(f.id) && !q;
-            return (
-              <div className="drawer-folder" key={f.id}>
-                <FolderHead
-                  id={f.id}
-                  name={f.name}
-                  count={inside.length}
-                  collapsed={isCollapsed}
-                  renaming={renamingFolder === f.id}
-                  onToggle={() => toggleFolder(f.id)}
-                  onRenameStart={() => setRenamingFolder(f.id)}
-                  onRenameEnd={() => setRenamingFolder(null)}
-                />
-                {!isCollapsed &&
-                  inside.map((sc) => (
-                    <div key={sc.id} style={{ paddingLeft: 14 }}>
-                      <SceneRow scene={sc} current={sc.id === sceneId} onOpen={close} />
-                    </div>
-                  ))}
-              </div>
-            );
-          })}
+          {user && shared.length > 0 && scenes.length > 0 && (
+            <button
+              className="drawer-section-head"
+              aria-expanded={!mineCollapsed || !!q}
+              onClick={() => setMineCollapsed(!mineCollapsed)}
+            >
+              {mineCollapsed && !q ? (
+                <ChevronRight size={13} />
+              ) : (
+                <ChevronDown size={13} />
+              )}
+              Your scenes
+              <span className="count">{filtered.length}</span>
+            </button>
+          )}
+          {(!mineCollapsed || q || shared.length === 0) && (
+            <>
+              {unfiled.map((sc) => (
+                <SceneRow key={sc.id} scene={sc} current={sc.id === sceneId} onOpen={close} />
+              ))}
+              {folders.map((f) => {
+                const inside = byFolder.get(f.id) ?? [];
+                if (q && inside.length === 0) return null;
+                const isCollapsed = collapsed.has(f.id) && !q;
+                return (
+                  <div className="drawer-folder" key={f.id}>
+                    <FolderHead
+                      id={f.id}
+                      name={f.name}
+                      count={inside.length}
+                      collapsed={isCollapsed}
+                      renaming={renamingFolder === f.id}
+                      onToggle={() => toggleFolder(f.id)}
+                      onRenameStart={() => setRenamingFolder(f.id)}
+                      onRenameEnd={() => setRenamingFolder(null)}
+                    />
+                    {!isCollapsed &&
+                      inside.map((sc) => (
+                        <div key={sc.id} style={{ paddingLeft: 14 }}>
+                          <SceneRow scene={sc} current={sc.id === sceneId} onOpen={close} />
+                        </div>
+                      ))}
+                  </div>
+                );
+              })}
+            </>
+          )}
         </div>
-        {user && (
+        {user ? (
           <div className="drawer-footer">
             <button className="btn btn-primary" style={{ flex: 1 }} onClick={newScene}>
               <FilePlus2 size={15} /> New scene
@@ -166,6 +199,34 @@ export const ScenesDrawer = () => {
             <button className="btn btn-outline" onClick={newFolder}>
               <FolderPlus size={15} /> Folder
             </button>
+          </div>
+        ) : (
+          <div className="drawer-footer drawer-footer-anon">
+            <div className="anon-note">
+              <CloudOff size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span>
+                You're not signed in — these canvases live only in this
+                browser.
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {live && (
+                <button
+                  className="btn btn-outline"
+                  style={{ flex: 1 }}
+                  onClick={() => setDialog("share")}
+                >
+                  <UsersRound size={15} /> Live session
+                </button>
+              )}
+              <button
+                className="btn btn-primary"
+                style={{ flex: 1 }}
+                onClick={() => setDialog("auth")}
+              >
+                Sign in
+              </button>
+            </div>
           </div>
         )}
       </aside>
@@ -190,6 +251,7 @@ const SharedRow = ({
   const sceneTitle = useStore((s) => s.sceneTitle);
   const [busy, setBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -197,6 +259,7 @@ const SharedRow = ({
     const onDown = (e: PointerEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false);
+        setConfirmingEnd(false);
       }
     };
     document.addEventListener("pointerdown", onDown);
@@ -291,7 +354,28 @@ const SharedRow = ({
               Session details…
             </button>
           )}
-          <div className="menu-sep" />
+          {(current || live) && <div className="menu-sep" />}
+          {!live && room.ownerToken && (
+            <button
+              className="menu-item danger"
+              disabled={busy}
+              onClick={async () => {
+                if (!confirmingEnd) {
+                  setConfirmingEnd(true);
+                  return;
+                }
+                setBusy(true);
+                const ok = await collab.endSavedSession(room);
+                setBusy(false);
+                setConfirmingEnd(false);
+                if (ok) setMenuOpen(false);
+              }}
+            >
+              {confirmingEnd
+                ? "Really end it for everyone?"
+                : "End session for everyone"}
+            </button>
+          )}
           <button
             className="menu-item danger"
             disabled={live}
