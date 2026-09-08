@@ -1,5 +1,5 @@
 import { RoughCanvas } from "roughjs/bin/canvas";
-import type { Theme, LakarElement } from "../types";
+import type { Theme, LakarElement, TextElement } from "../types";
 import { isLinearLike } from "../types";
 import { getElementBounds } from "../elements";
 import { themedColor } from "../colors";
@@ -16,12 +16,22 @@ export const renderElement = (
   theme: Theme,
   opacityMultiplier = 1,
   zoom = 1,
+  arrowLabel?: TextElement,
 ) => {
   const bounds = getElementBounds(el);
   const cx = (bounds.minX + bounds.maxX) / 2;
   const cy = (bounds.minY + bounds.maxY) / 2;
 
   ctx.save();
+  if (el.type === "arrow" && arrowLabel) {
+    // Clip only this arrow, preserving backgrounds and transparent exports.
+    const pad = el.strokeWidth * 4 + 20;
+    const radius = Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) + pad;
+    ctx.beginPath();
+    ctx.rect(cx - radius, cy - radius, radius * 2, radius * 2);
+    ctx.rect(arrowLabel.x - 4, arrowLabel.y - 4, arrowLabel.width + 8, arrowLabel.height + 8);
+    ctx.clip("evenodd");
+  }
   ctx.globalAlpha = (el.opacity / 100) * opacityMultiplier;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";

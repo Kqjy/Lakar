@@ -58,6 +58,7 @@ export const DEFAULT_ITEM: ItemDefaults = {
   fontSize: FONT_SIZES.M,
   fontFamily: "hand",
   textAlign: "left",
+  verticalAlign: "middle",
   startArrowhead: "none",
   endArrowhead: "arrow",
 };

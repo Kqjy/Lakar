@@ -10,7 +10,7 @@ import type {
 } from "../types";
 import {
   isBoundText,
-  isContainerElement,
+  isTextContainer,
   isFrameElement,
   isLinearLike,
   isTextElement,
@@ -195,12 +195,11 @@ export const CanvasArea = () => {
 
       const elements = s.presenting
         ? presentationElements(s.elements, currentSlide())
-        : s.editingTextId
-          ? s.elements.filter((el) => el.id !== s.editingTextId)
-          : s.elements;
+        : s.elements;
 
       renderStaticScene({
         canvas: staticCanvas,
+        editingTextId: s.editingTextId,
         elements,
         viewport: s.viewport,
         theme: s.theme,
@@ -756,7 +755,7 @@ export const CanvasArea = () => {
     const s = useStore.getState();
     let textEl = getBoundText(s.elements, container.id);
     if (!textEl) {
-      const loose = getLooseTextInside(s.elements, container, at);
+      const loose = container.type === "arrow" ? undefined : getLooseTextInside(s.elements, container, at);
       if (loose) {
         s.setSelectedIds([loose.id]);
         s.setEditingText(loose.id);
@@ -1055,7 +1054,8 @@ export const CanvasArea = () => {
       if (s.editingTextId) return;
       e.preventDefault();
       const hitEl = getElementAtPosition(s.elements, p, s.viewport.zoom);
-      startTextEditing(p, hitEl && isTextElement(hitEl) ? hitEl : null);
+      if (hitEl && isTextContainer(hitEl)) startBoundTextEditing(hitEl, p);
+      else startTextEditing(p, hitEl && isTextElement(hitEl) ? hitEl : null);
       return;
     }
 
@@ -1338,7 +1338,7 @@ export const CanvasArea = () => {
             x: snap.x + dx,
             y: snap.y + dy,
           } as Partial<LakarElement>);
-          if (isContainerElement(el)) syncBoundText(s.elements, el);
+          if (isTextContainer(el)) syncBoundText(s.elements, el);
         }
         updateBoundArrows(s.elements, new Set(session.snapshots.keys()));
         s.bumpScene();
@@ -1372,7 +1372,7 @@ export const CanvasArea = () => {
             if (k.includes("n")) mutateElement(el, { y: anchor.y - el.height });
           }
           if (session.angle) fixCenterAfterRotatedResize(el, session.center);
-          if (isContainerElement(el)) syncBoundText(s.elements, el);
+          if (isTextContainer(el)) syncBoundText(s.elements, el);
         }
         updateBoundArrows(
           s.elements,
@@ -1410,7 +1410,7 @@ export const CanvasArea = () => {
             x: el.x + targetMin.x - curMin.x,
             y: el.y + targetMin.y - curMin.y,
           } as Partial<LakarElement>);
-          if (isContainerElement(el)) syncBoundText(s.elements, el);
+          if (isTextContainer(el)) syncBoundText(s.elements, el);
         }
         updateBoundArrows(s.elements, new Set(session.snapshots.keys()));
         s.bumpScene();
@@ -1444,6 +1444,7 @@ export const CanvasArea = () => {
           );
           reclipArrow(el);
         }
+        syncBoundText(s.elements, el);
         s.bumpScene();
         break;
       }
@@ -1611,7 +1612,7 @@ export const CanvasArea = () => {
       setRenamingFrameId(hitEl.id);
       return;
     }
-    if (hitEl && isContainerElement(hitEl)) {
+    if (hitEl && isTextContainer(hitEl)) {
       startBoundTextEditing(hitEl, p);
       return;
     }

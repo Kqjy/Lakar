@@ -8,6 +8,7 @@ import { themedColor } from "../colors";
 import { getElementBounds } from "../elements";
 import { isLinearLike } from "../types";
 import { FONT_FAMILY_CSS, measureText } from "../text/measure";
+import { getBoundText } from "../boundText";
 export { downloadBlob } from "./download";
 import { downloadBlob } from "./download";
 
@@ -59,7 +60,7 @@ export const renderToCanvas = ({
     (-bounds.minY + PADDING) * scale,
   );
   const rc = new RoughCanvas(canvas);
-  for (const el of visible) renderElement(ctx, rc, el, theme);
+  for (const el of visible) renderElement(ctx, rc, el, theme, 1, 1, el.type === "arrow" ? getBoundText(visible, el.id) : undefined);
   return canvas;
 };
 
@@ -121,6 +122,11 @@ export const exportSVG = ({
   }
 
   for (const el of visible) {
+    const label = el.type === "arrow" ? getBoundText(visible, el.id) : undefined;
+    if (label) {
+      const maskId = `arrow-label-${visible.indexOf(el)}`;
+      parts.push(`<defs><mask id="${maskId}" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="white"/><rect x="${label.x + offX - 4}" y="${label.y + offY - 4}" width="${label.width + 8}" height="${label.height + 8}" fill="black"/></mask></defs><g mask="url(#${maskId})">`);
+    }
     const b = getElementBounds(el);
     const cx = (b.minX + b.maxX) / 2 + offX;
     const cy = (b.minY + b.maxY) / 2 + offY;
@@ -202,9 +208,9 @@ export const exportSVG = ({
       }
     }
     parts.push("</g></g>");
+    if (label) parts.push("</g>");
   }
   parts.push("</svg>");
   const blob = new Blob([parts.join("\n")], { type: "image/svg+xml" });
   downloadBlob(blob, filename);
 };
-

@@ -21,6 +21,8 @@ const RESUME_TTL = ROOM_RESUME_TTL;
 const MAX_RESUMES = MAX_ROOM_RESUMES;
 
 export interface CachedRemoteState {
+  userId?: string;
+  pendingDeletes?: string[];
   scenes: {
     id: string;
     title: string;

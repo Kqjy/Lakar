@@ -5,7 +5,8 @@ import { mutateElement, refreshTextDimensions } from "../elements";
 import { measureText, FONT_FAMILY_CSS } from "../text/measure";
 import { themedColor } from "../colors";
 import { history } from "../history";
-import { BOUND_PAD, getContainerOf, syncBoundText } from "../boundText";
+import { BOUND_PAD, getArrowLabelCenter, getBoundTextCenterY, getContainerOf, syncBoundText } from "../boundText";
+import { rotatePoint } from "../math";
 
 export const TextEditorOverlay = ({
   containerRef,
@@ -95,7 +96,15 @@ const Editor = ({
   let height: number;
   let angle = el.angle;
 
-  if (container) {
+  if (container && (container.type === "arrow" || container.type === "line")) {
+    const metrics = measureText(text || " ", el.fontFamily, el.fontSize, el.lineHeight);
+    const center = getArrowLabelCenter(container);
+    width = Math.max(metrics.width, el.fontSize) * zoom + 8;
+    height = metrics.height * zoom + 4;
+    left = (center.x - viewport.scrollX) * zoom - width / 2;
+    top = (center.y - viewport.scrollY) * zoom - height / 2;
+    angle = 0;
+  } else if (container) {
     const innerW = Math.max(30, Math.abs(container.width) - BOUND_PAD * 2);
     const wrappedMetrics = measureText(
       el.text || " ",
@@ -107,8 +116,13 @@ const Editor = ({
     height = Math.max(wrappedMetrics.height, el.fontSize * el.lineHeight) * zoom + 4;
     const ccx = container.x + container.width / 2;
     const ccy = container.y + container.height / 2;
-    left = (ccx - innerW / 2 - viewport.scrollX) * zoom;
-    top = (ccy - viewport.scrollY) * zoom - height / 2;
+    const center = rotatePoint(
+      { x: ccx, y: getBoundTextCenterY(container, wrappedMetrics.height, el.verticalAlign) },
+      { x: ccx, y: ccy },
+      container.angle,
+    );
+    left = (center.x - innerW / 2 - viewport.scrollX) * zoom;
+    top = (center.y - viewport.scrollY) * zoom - height / 2;
     angle = container.angle;
   } else {
     const metrics = measureText(text || " ", el.fontFamily, el.fontSize, el.lineHeight);
@@ -145,8 +159,8 @@ const Editor = ({
         color: themedColor(el.strokeColor, theme),
         textAlign: el.textAlign,
         opacity: el.opacity / 100,
-        whiteSpace: container ? "pre-wrap" : "pre",
-        overflowWrap: container ? "break-word" : undefined,
+        whiteSpace: container && container.type !== "arrow" ? "pre-wrap" : "pre",
+        overflowWrap: container && container.type !== "arrow" ? "break-word" : undefined,
         transform: angle ? `rotate(${angle}rad)` : undefined,
         transformOrigin: "center center",
       }}

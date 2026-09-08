@@ -83,6 +83,7 @@ export const createElement = ({
         fontSize: defaults.fontSize,
         fontFamily: defaults.fontFamily,
         textAlign: defaults.textAlign,
+        verticalAlign: defaults.verticalAlign ?? "middle",
         lineHeight: 1.25,
         containerId: null,
       };

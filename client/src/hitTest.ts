@@ -130,7 +130,11 @@ export const getElementAtPosition = (
   for (let i = elements.length - 1; i >= 0; i--) {
     const el = elements[i];
     if (el.isDeleted || (el.locked && !includeLocked)) continue;
-    if (isBoundText(el)) continue;
+    if (isBoundText(el)) {
+      const arrow = elements.find((host) => host.id === el.containerId && host.type === "arrow" && !host.isDeleted);
+      if (arrow && (includeLocked || !arrow.locked) && hitTestElement(el, scenePoint, zoom)) return arrow;
+      continue;
+    }
     if (hitTestElement(el, scenePoint, zoom)) return el;
   }
   return null;

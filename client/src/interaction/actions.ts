@@ -3,7 +3,7 @@ import { getSelectedElements, getVisibleElements, useStore } from "../store";
 import type { Point, LakarElement } from "../types";
 import {
   isBoundText,
-  isContainerElement,
+  isTextContainer,
   isLinearLike,
   isTextElement,
 } from "../types";
@@ -120,7 +120,7 @@ export const nudgeSelected = (dx: number, dy: number) => {
   for (const el of s.elements) {
     if (el.isDeleted || el.locked || !ids.has(el.id)) continue;
     mutateElement(el, { x: el.x + dx, y: el.y + dy } as Partial<LakarElement>);
-    if (isContainerElement(el)) syncBoundText(s.elements, el);
+    if (isTextContainer(el)) syncBoundText(s.elements, el);
   }
   updateBoundArrows(s.elements, ids);
   s.bumpScene();
@@ -166,7 +166,7 @@ const shiftUnit = (
   for (const el of elements) {
     if (el.isDeleted || el.locked || !ids.has(el.id)) continue;
     mutateElement(el, { x: el.x + dx, y: el.y + dy } as Partial<LakarElement>);
-    if (isContainerElement(el)) syncBoundText(elements, el);
+    if (isTextContainer(el)) syncBoundText(elements, el);
   }
 };
 
@@ -465,10 +465,14 @@ export const applyStyleToSelection = (
   const s = useStore.getState();
   const selected = getSelectedElements();
   if (!selected.length) return false;
-  for (const el of selected) {
+  const textStyleKeys = new Set(["fontSize", "fontFamily", "textAlign", "verticalAlign"]);
+  const targetIds = expandWithBoundTexts(s.elements, selected.map((el) => el.id));
+  const targets = s.elements.filter((el) => !el.isDeleted && targetIds.has(el.id));
+  for (const el of targets) {
     const applicable: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
-      if (key in el) applicable[key] = value;
+      if (!s.selectedIds.has(el.id) && !textStyleKeys.has(key)) continue;
+      if (key in el || (isBoundText(el) && key === "verticalAlign")) applicable[key] = value;
     }
     if (Object.keys(applicable).length) {
       mutateElement(el, applicable as Partial<LakarElement>);
@@ -477,7 +481,8 @@ export const applyStyleToSelection = (
         ("fontSize" in applicable ||
           "fontFamily" in applicable ||
           "text" in applicable ||
-          "textAlign" in applicable)
+          "textAlign" in applicable ||
+          "verticalAlign" in applicable)
       ) {
         refreshTextDimensions(el, true);
         const container = getContainerOf(s.elements, el);

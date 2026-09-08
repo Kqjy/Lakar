@@ -22,6 +22,7 @@ export type StrokeStyle = "solid" | "dashed" | "dotted";
 export type Arrowhead = "none" | "arrow" | "bar" | "dot";
 export type FontFamily = "hand" | "normal" | "code";
 export type TextAlign = "left" | "center" | "right";
+export type VerticalAlign = "top" | "middle" | "bottom";
 export type Theme = "light" | "dark";
 
 export interface BaseElement {
@@ -93,6 +94,7 @@ export interface TextElement extends BaseElement {
   fontSize: number;
   fontFamily: FontFamily;
   textAlign: TextAlign;
+  verticalAlign?: VerticalAlign;
   lineHeight: number;
   containerId: string | null;
   originalText?: string;
@@ -112,6 +114,11 @@ export type ContainerElement =
   | RectangleElement
   | DiamondElement
   | EllipseElement;
+
+export type TextContainerElement = ContainerElement | LinearElement;
+
+export const isTextContainer = (el: LakarElement): el is TextContainerElement =>
+  isContainerElement(el) || el.type === "arrow";
 
 export type BindableElement =
   | RectangleElement
@@ -174,6 +181,7 @@ export interface ItemDefaults {
   fontSize: number;
   fontFamily: FontFamily;
   textAlign: TextAlign;
+  verticalAlign: VerticalAlign;
   startArrowhead: Arrowhead;
   endArrowhead: Arrowhead;
 }

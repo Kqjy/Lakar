@@ -8,6 +8,7 @@ import type {
 import { isArrowElement, isBindableElement } from "./types";
 import { getElementBounds, mutateElement, normalizeLinear } from "./elements";
 import { clamp, rotatePoint } from "./math";
+import { syncBoundText } from "./boundText";
 
 export const BINDING_THRESHOLD = 18;
 
@@ -293,6 +294,7 @@ export const updateBoundArrows = (
     const touchesEnd = el.endBinding && changedIds.has(el.endBinding.elementId);
     if (!touchesStart && !touchesEnd && !changedIds.has(el.id)) continue;
     if (updateBoundPoints(byId, el)) any = true;
+    syncBoundText(elements, el);
   }
   return any;
 };

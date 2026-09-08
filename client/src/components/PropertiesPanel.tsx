@@ -22,6 +22,8 @@ import {
   Ungroup,
 } from "lucide-react";
 import { getSelectedElements, useStore } from "../store";
+import { expandWithBoundTexts } from "../boundText";
+import { isBoundText, isContainerElement } from "../types";
 import type { ItemDefaults, Theme, ToolType, LakarElement } from "../types";
 import {
   BACKGROUND_COLORS,
@@ -63,6 +65,10 @@ export const PropertiesPanel = () => {
   const setItemDefaults = useStore((s) => s.setItemDefaults);
 
   const selected = getSelectedElements();
+  const textSelectionIds = expandWithBoundTexts(useStore.getState().elements, selected.map((el) => el.id));
+  const textSelection = useStore.getState().elements.filter(
+    (el) => !el.isDeleted && el.type === "text" && textSelectionIds.has(el.id),
+  );
   const hasSelection = selected.length > 0 && activeTool === "selection";
   const toolType = TYPE_FOR_TOOL[activeTool];
   const isBucket = activeTool === "bucket";
@@ -76,7 +82,11 @@ export const PropertiesPanel = () => {
 
   const value = <K extends PropKey>(key: K): ItemDefaults[K] => {
     if (hasSelection) {
-      for (const el of selected) {
+      if (key === "verticalAlign") {
+        const text = textSelection.find(isBoundText);
+        if (text) return (text.verticalAlign ?? "middle") as ItemDefaults[K];
+      }
+      for (const el of [...selected, ...textSelection]) {
         if (key in el) return (el as unknown as ItemDefaults)[key];
       }
     }
@@ -109,7 +119,10 @@ export const PropertiesPanel = () => {
   const showRoughness = has("rectangle", "diamond", "ellipse", "arrow", "line");
   const showEdges = has("rectangle", "diamond", "line", "arrow");
   const showArrowheads = has("arrow");
-  const showText = has("text");
+  const showText = has("text") || (hasSelection && textSelection.length > 0);
+  const showVerticalAlign = hasSelection && textSelection.some((text) =>
+    isBoundText(text) && useStore.getState().elements.some((el) => el.id === text.containerId && isContainerElement(el)),
+  );
 
   return (
     <div className="island props-panel" onPointerDown={(e) => e.stopPropagation()}>
@@ -269,6 +282,19 @@ export const PropertiesPanel = () => {
               onPick={(v) => apply({ textAlign: v as ItemDefaults["textAlign"] })}
             />
           </Section>
+          {showVerticalAlign && (
+            <Section label="Vertical align">
+              <Seg
+                options={[
+                  { key: "top", icon: <AlignStartHorizontal size={15} />, label: "Text top" },
+                  { key: "middle", icon: <AlignCenterHorizontal size={15} />, label: "Text middle" },
+                  { key: "bottom", icon: <AlignEndHorizontal size={15} />, label: "Text bottom" },
+                ]}
+                current={value("verticalAlign")}
+                onPick={(v) => apply({ verticalAlign: v as ItemDefaults["verticalAlign"] })}
+              />
+            </Section>
+          )}
         </>
       )}
       <Section label={`Opacity — ${value("opacity")}%`}>

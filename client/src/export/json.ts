@@ -214,6 +214,9 @@ const normalizeImported = (
         ? el.textAlign
         : "left") as TextElement["textAlign"],
       lineHeight: num(el.lineHeight, TEXT_LINE_HEIGHT),
+      verticalAlign: (["top", "middle", "bottom"].includes(el.verticalAlign as string)
+        ? el.verticalAlign
+        : "middle") as TextElement["verticalAlign"],
       containerId:
         typeof el.containerId === "string" && el.containerId ? el.containerId : null,
       originalText: str(el.originalText, rawText),
@@ -402,7 +405,7 @@ export const exportExcalidrawFile = (
         base.fontSize = el.fontSize;
         base.fontFamily = LAKAR_FONT_TO_EXCALIDRAW[el.fontFamily];
         base.textAlign = el.textAlign;
-        base.verticalAlign = el.containerId ? "middle" : "top";
+        base.verticalAlign = el.containerId ? (el.verticalAlign ?? "middle") : "top";
         base.containerId = el.containerId;
         base.originalText = el.originalText ?? el.text;
         base.autoResize = !el.containerId;

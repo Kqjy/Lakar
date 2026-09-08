@@ -16,6 +16,7 @@ import {
 import { boundsOverlap, rotatePoint } from "../math";
 import { renderElement } from "./renderElement";
 import { themedColor } from "../colors";
+import { getBoundText } from "../boundText";
 import type { SnapGuide } from "../interaction/snap";
 
 export const GUIDE_COLOR = { light: "#db2777", dark: "#f472b6" };
@@ -33,6 +34,7 @@ export interface StaticRenderConfig {
   width: number;
   height: number;
   dpr: number;
+  editingTextId?: string | null;
 }
 
 let rcCache = new WeakMap<HTMLCanvasElement, RoughCanvas>();
@@ -109,7 +111,7 @@ export const renderStaticScene = (cfg: StaticRenderConfig) => {
   }
 
   for (const el of elements) {
-    if (el.isDeleted || isFrameElement(el) || !visible(el)) continue;
+    if (el.isDeleted || el.id === cfg.editingTextId || isFrameElement(el) || !visible(el)) continue;
     const opacity = pendingEraseIds.has(el.id) ? 0.25 : 1;
     const frame = el.frameId ? frames.get(el.frameId) : undefined;
     if (frame) {
@@ -118,10 +120,10 @@ export const renderStaticScene = (cfg: StaticRenderConfig) => {
       ctx.beginPath();
       ctx.rect(fb.minX, fb.minY, fb.maxX - fb.minX, fb.maxY - fb.minY);
       ctx.clip();
-      renderElement(ctx, rc, el, theme, opacity, zoom);
+      renderElement(ctx, rc, el, theme, opacity, zoom, el.type === "arrow" ? getBoundText(elements, el.id) : undefined);
       ctx.restore();
     } else {
-      renderElement(ctx, rc, el, theme, opacity, zoom);
+      renderElement(ctx, rc, el, theme, opacity, zoom, el.type === "arrow" ? getBoundText(elements, el.id) : undefined);
     }
   }
 };

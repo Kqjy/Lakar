@@ -90,6 +90,9 @@ class SyncManager {
   private pushing = false;
   private quotaNotified = false;
   private pendingPush = new Set<string>();
+  private pendingDeletes = new Set<string>();
+  private revisions = new Map<string, number>();
+  private openRequest = 0;
   private lastOpenSceneId: string | null = null;
   private guestMode = true;
   private roomSceneId: string | null = null;
@@ -128,6 +131,7 @@ class SyncManager {
         await this.hydrateFromCache();
         await this.refreshRemote();
         await this.openLastScene();
+        if (this.pendingPush.size || this.pendingDeletes.size) this.scheduleRetry();
         return;
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
@@ -236,6 +240,8 @@ class SyncManager {
     const s = useStore.getState();
     const cache = await loadRemoteCache();
     if (!cache) return false;
+    if (cache.userId && cache.userId !== this.userId) return false;
+    this.pendingDeletes = new Set(cache.pendingDeletes ?? []);
     s.setScenes(
       cache.scenes.map(
         (sc): SceneMeta => ({
@@ -267,6 +273,8 @@ class SyncManager {
   private async persistCache() {
     const s = useStore.getState();
     await saveRemoteCache({
+      userId: this.userId ?? undefined,
+      pendingDeletes: [...this.pendingDeletes],
       scenes: s.scenes.map((sc) => ({
         id: sc.id,
         title: sc.title,
@@ -289,12 +297,18 @@ class SyncManager {
   private async refreshRemote() {
     const s = useStore.getState();
     if (!this.ring) return;
+    const deletedAtStart = new Set(this.pendingDeletes);
     const { scenes, folders, sceneBytes, quotaBytes } = await api.listScenes();
     s.setStorage({ sceneBytes, quotaBytes });
     const existing = new Map(s.scenes.map((sc) => [sc.id, sc]));
     const metas: SceneMeta[] = [];
     for (const remote of scenes) {
+      if (this.pendingDeletes.has(remote.id)) continue;
       const prev = existing.get(remote.id);
+      if (prev?.dirty) {
+        metas.push(prev);
+        continue;
+      }
       let title = prev?.title ?? "Untitled";
       try {
         title = await decryptRecord(
@@ -332,9 +346,21 @@ class SyncManager {
       folderMetas.push({ id: f.id, name, color, createdAt: f.createdAt });
     }
     folderMetas.sort((a, b) => a.name.localeCompare(b.name));
-    s.setScenes(metas);
+    // Preserve changes made while the listing and title decryptions were pending.
+    const current = useStore.getState().scenes;
+    const merged = metas.map((meta) => {
+      const latest = current.find((sc) => sc.id === meta.id);
+      return latest && latest !== existing.get(meta.id) ? latest : meta;
+    });
+    for (const meta of current) {
+      if (!existing.has(meta.id) && !merged.some((sc) => sc.id === meta.id)) merged.push(meta);
+    }
+    s.setScenes(merged.filter((meta) =>
+      !this.pendingDeletes.has(meta.id) && !deletedAtStart.has(meta.id) &&
+      (!existing.has(meta.id) || current.some((sc) => sc.id === meta.id)),
+    ));
     s.setFolders(folderMetas);
-    s.setSyncStatus(this.pendingPush.size ? "syncing" : "synced");
+    s.setSyncStatus(this.pendingPush.size || this.pendingDeletes.size ? "syncing" : "synced");
     await this.persistCache();
   }
 
@@ -352,16 +378,27 @@ class SyncManager {
   async openScene(id: string) {
     const s = useStore.getState();
     if (s.sceneId === id) return;
+    const request = ++this.openRequest;
     if (!(await this.releaseRoomScene())) await this.flushNow();
-    const meta = s.scenes.find((sc) => sc.id === id);
+    if (request !== this.openRequest) return;
+    const meta = useStore.getState().scenes.find((sc) => sc.id === id);
     if (!meta) return;
     const cached = await loadSceneDoc(id);
+    if (request !== this.openRequest || this.pendingDeletes.has(id)) return;
     if (cached) {
       this.applyDocument(cached);
       s.setScene(id, meta.title);
       history.reset();
     }
     this.lastOpenSceneId = id;
+    const baseline = useStore.getState();
+    const unchanged = () => {
+      const current = useStore.getState();
+      return request === this.openRequest && !this.pendingDeletes.has(id) &&
+        current.sceneId === baseline.sceneId &&
+        current.sceneNonce === baseline.sceneNonce && current.canvasBg === baseline.canvasBg &&
+        !current.scenes.find((sc) => sc.id === id)?.dirty;
+    };
     if (!cached || !meta.dirty) {
       try {
         if (this.ring) {
@@ -371,6 +408,13 @@ class SyncManager {
             this.ctx("scene", id),
             remote.encData,
           );
+          if (!unchanged()) {
+            if (request === this.openRequest && !this.pendingDeletes.has(id) && !useStore.getState().sceneId) {
+              s.setScene(id, meta.title);
+              await this.flushNow();
+            }
+            return;
+          }
           if (!cached || remote.version >= meta.remoteVersion) {
             this.applyDocument(doc);
             s.setScene(id, meta.title);
@@ -386,6 +430,7 @@ class SyncManager {
         }
       }
     }
+    if (request !== this.openRequest) return;
     if (!useStore.getState().sceneId) {
       s.setScene(id, meta.title);
       history.reset();
@@ -399,6 +444,19 @@ class SyncManager {
     s.setScenes(
       s.scenes.map((sc) => (sc.id === id ? { ...sc, ...patch } : sc)),
     );
+  }
+
+  private markDirty(id: string) {
+    this.revisions.set(id, (this.revisions.get(id) ?? 0) + 1);
+    this.updateMeta(id, { dirty: true, updatedAt: Date.now() });
+    this.pendingPush.add(id);
+  }
+
+  private acknowledgePush(id: string, revision: number, version: number, updatedAt?: number) {
+    if (this.pendingDeletes.has(id)) return;
+    const dirty = (this.revisions.get(id) ?? 0) !== revision;
+    if (!dirty) this.pendingPush.delete(id);
+    this.updateMeta(id, { dirty, remoteVersion: version, ...(updatedAt === undefined ? {} : { updatedAt }) });
   }
 
   onSceneMutated() {
@@ -428,12 +486,12 @@ class SyncManager {
       return;
     }
     const id = s.sceneId;
-    if (!id) return;
+    if (!id || this.pendingDeletes.has(id)) return;
     const prev = await loadSceneDoc(id);
     if (prev && JSON.stringify(prev) === JSON.stringify(doc)) return;
+    if (this.pendingDeletes.has(id)) return;
+    this.markDirty(id);
     await saveSceneDoc(id, doc);
-    this.updateMeta(id, { dirty: true, updatedAt: Date.now() });
-    this.pendingPush.add(id);
     await this.persistCache();
     void this.pushPending();
   }
@@ -446,8 +504,21 @@ class SyncManager {
     s.setSyncStatus("syncing");
     let quotaHit = false;
     try {
-      while (this.pendingPush.size) {
+      while (this.pendingPush.size || this.pendingDeletes.size) {
+        if (this.pendingDeletes.size) {
+          const id = [...this.pendingDeletes][0];
+          try {
+            await api.deleteScene(id);
+          } catch (err) {
+            if (!(err instanceof ApiError && err.status === 404)) throw err;
+          }
+          await deleteSceneDoc(id);
+          this.pendingDeletes.delete(id);
+          await this.persistCache();
+          continue;
+        }
         const id = [...this.pendingPush][0];
+        const revision = this.revisions.get(id) ?? 0;
         const meta = useStore.getState().scenes.find((sc) => sc.id === id);
         const doc = await loadSceneDoc(id);
         if (!meta || !doc) {
@@ -467,15 +538,11 @@ class SyncManager {
             folderId: meta.folderId,
             version: meta.remoteVersion,
           });
-          this.pendingPush.delete(id);
-          this.updateMeta(id, {
-            dirty: false,
-            remoteVersion: res.version,
-            updatedAt: res.updatedAt,
-          });
+          this.acknowledgePush(id, revision, res.version, res.updatedAt);
         } catch (err) {
+          if (this.pendingDeletes.has(id)) continue;
           if (err instanceof ApiError && err.status === 409) {
-            await this.resolveConflict(id, doc);
+            await this.resolveConflict(id, doc, revision);
             continue;
           }
           if (err instanceof ApiError && err.status === 404) {
@@ -485,11 +552,10 @@ class SyncManager {
               encTitle,
               folderId: meta.folderId,
             });
-            this.pendingPush.delete(id);
             if (created.id !== id) {
               await this.adoptNewId(id, created.id, created.version, doc);
             } else {
-              this.updateMeta(id, { dirty: false, remoteVersion: created.version });
+              this.acknowledgePush(id, revision, created.version);
             }
             continue;
           }
@@ -558,7 +624,7 @@ class SyncManager {
     if (this.lastOpenSceneId === oldId) this.lastOpenSceneId = newId;
   }
 
-  private async resolveConflict(id: string, localDoc: SceneDocument) {
+  private async resolveConflict(id: string, localDoc: SceneDocument, revision: number) {
     const s = useStore.getState();
     if (!this.ring) return;
     try {
@@ -569,9 +635,7 @@ class SyncManager {
         remote.encData,
       );
       if (JSON.stringify(remoteDoc) === JSON.stringify(localDoc)) {
-        await saveSceneDoc(id, remoteDoc);
-        this.pendingPush.delete(id);
-        this.updateMeta(id, { remoteVersion: remote.version, dirty: false });
+        this.acknowledgePush(id, revision, remote.version);
         s.setSyncStatus("synced");
         return;
       }
@@ -595,8 +659,11 @@ class SyncManager {
         folderId: meta?.folderId ?? null,
       });
       await saveSceneDoc(created.id, localDoc);
-      await saveSceneDoc(id, remoteDoc);
-      this.pendingPush.delete(id);
+      const unchanged = !this.pendingDeletes.has(id) && (this.revisions.get(id) ?? 0) === revision;
+      if (unchanged) {
+        await saveSceneDoc(id, remoteDoc);
+        this.acknowledgePush(id, revision, remote.version);
+      }
       const now = Date.now();
       s.setScenes([
         {
@@ -608,13 +675,9 @@ class SyncManager {
           updatedAt: now,
           dirty: false,
         },
-        ...s.scenes.map((sc) =>
-          sc.id === id
-            ? { ...sc, remoteVersion: remote.version, dirty: false }
-            : sc,
-        ),
+        ...useStore.getState().scenes,
       ]);
-      if (s.sceneId === id) {
+      if (unchanged && useStore.getState().sceneId === id) {
         s.setScene(created.id, conflictTitle);
         this.lastOpenSceneId = created.id;
       }
@@ -623,10 +686,10 @@ class SyncManager {
         "info",
       );
       s.setSyncStatus("synced");
-    } catch {
-      this.pendingPush.delete(id);
+    } catch (err) {
       s.setSyncStatus("conflict");
       s.toast("Sync conflict — could not reconcile with the server", "error");
+      throw err;
     }
   }
 
@@ -634,14 +697,14 @@ class SyncManager {
     if (this.retryTimer) return;
     this.retryTimer = window.setTimeout(() => {
       this.retryTimer = null;
-      if (this.pendingPush.size) void this.pushPending();
+      if (this.pendingPush.size || this.pendingDeletes.size) void this.pushPending();
       else void this.refreshRemote().catch(() => this.scheduleRetry());
     }, RETRY_INTERVAL);
   }
 
   onOnline() {
     if (this.guestMode) return;
-    if (this.pendingPush.size) void this.pushPending();
+    if (this.pendingPush.size || this.pendingDeletes.size) void this.pushPending();
     else void this.refreshRemote().catch(() => void 0);
   }
 
@@ -878,6 +941,7 @@ class SyncManager {
   }
 
   async signOut(clearData = true) {
+    ++this.openRequest;
     const s = useStore.getState();
     await this.flushNow().catch(() => void 0);
     setToken(null);
@@ -885,6 +949,8 @@ class SyncManager {
     this.ark = null;
     this.ring = null;
     this.pendingPush.clear();
+    this.pendingDeletes.clear();
+    this.revisions.clear();
     this.quotaNotified = false;
     this.lastOpenSceneId = null;
     if (clearData) await clearAllLocalData();
@@ -906,6 +972,7 @@ class SyncManager {
   ): Promise<string | null> {
     const s = useStore.getState();
     if (!this.ring || !s.user) return null;
+    if (open) ++this.openRequest;
     const emptyDoc: SceneDocument = {
       type: "lakar",
       version: 1,
@@ -962,6 +1029,7 @@ class SyncManager {
     const s = useStore.getState();
     if (!this.ring) return;
     this.updateMeta(id, { title });
+    this.revisions.set(id, (this.revisions.get(id) ?? 0) + 1);
     if (s.sceneId === id) s.setSceneTitle(title);
     try {
       const meta = useStore.getState().scenes.find((sc) => sc.id === id);
@@ -981,21 +1049,29 @@ class SyncManager {
       s.toast("Rename will sync when you're back online", "info");
       this.updateMeta(id, { dirty: true });
       this.pendingPush.add(id);
+      await this.persistCache();
+      this.scheduleRetry();
     }
   }
 
   async deleteScene(id: string) {
     const s = useStore.getState();
+    ++this.openRequest;
+    this.pendingDeletes.add(id);
     const remaining = s.scenes.filter((sc) => sc.id !== id);
     s.setScenes(remaining);
     this.pendingPush.delete(id);
-    await deleteSceneDoc(id);
-    try {
-      await api.deleteScene(id);
-      if (this.pendingPush.size) void this.pushPending();
-    } catch {
-      s.toast("Delete will finish when you're back online", "info");
+    if (s.sceneId === id) {
+      s.setScene(null, "Untitled scene");
+      s.replaceElements([]);
+      history.reset();
+      this.lastOpenSceneId = null;
     }
+    // Persist the tombstone before removing the document or contacting the server.
+    await this.persistCache();
+    await deleteSceneDoc(id);
+    await this.pushPending();
+    if (!this.pushing && this.pendingDeletes.has(id)) s.toast("Delete will finish when you're back online", "info");
     if (s.sceneId === id) {
       if (remaining.length) await this.openScene(remaining[0].id);
       else await this.createScene("First canvas", null, true);
@@ -1053,6 +1129,7 @@ class SyncManager {
   async moveSceneToFolder(id: string, folderId: string | null) {
     const s = useStore.getState();
     this.updateMeta(id, { folderId });
+    this.revisions.set(id, (this.revisions.get(id) ?? 0) + 1);
     try {
       const meta = useStore.getState().scenes.find((sc) => sc.id === id);
       if (!meta) return;
@@ -1065,6 +1142,8 @@ class SyncManager {
     } catch {
       this.updateMeta(id, { dirty: true });
       this.pendingPush.add(id);
+      await this.persistCache();
+      this.scheduleRetry();
     }
   }
 
@@ -1206,6 +1285,7 @@ class SyncManager {
   }
 
   async enterRoomScene(roomId: string, title: string) {
+    ++this.openRequest;
     const s = useStore.getState();
     if (this.roomSceneId === roomId) {
       s.setScene(null, title);
