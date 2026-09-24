@@ -2,6 +2,7 @@ import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -956,4 +957,64 @@ test("a storage quota blocks scene writes until space is freed", async () => {
   } finally {
     await stopServer(server);
   }
+});
+
+
+test("published updates enforce aggregate quota and still allow shrinking", async () => {
+  const server = await startServer(5196);
+  let fixture;
+  try {
+    const acct = await registerAt(server, "publish-quota@example.com");
+    assert.equal(acct.status, 201);
+    const at = (method, path, body) => callTo(server.base, method, path, body, acct.body.token);
+    const blob = `v2.0.${randomB64(12)}.${"A".repeat(64)}`;
+    const created = await at("POST", "/published", { encData: blob });
+    assert.equal(created.status, 201);
+    const id = created.body.id;
+    fixture = new DatabaseSync(join(server.dir, "lakar.sqlite"));
+    fixture.prepare("INSERT INTO published(id,user_id,enc_data,size,created_at,updated_at) VALUES(?,?,?,?,?,?)")
+      .run("quota-fixture", acct.userId, blob, 256 * 1024 * 1024 - blob.length, 1, 1);
+    const denied = await at("PUT", `/published/${id}`, { encData: blob + "AAAA" });
+    assert.equal(denied.status, 403); assert.equal(denied.body.error.code, "quota");
+    assert.equal((await at("GET", `/published/${id}`)).body.encData, blob);
+    assert.equal((await at("PUT", `/published/${id}`, { encData: blob.slice(0, -4) })).status, 200);
+    await at("DELETE", "/published/quota-fixture");
+    assert.equal((await at("PUT", `/published/${id}`, { encData: blob + "AAAA" })).status, 200);
+  } finally {
+    fixture?.close(); await stopServer(server);
+  }
+});
+
+test("satchel updates are owned, atomic, and never recreate a deleted item", async () => {
+  const server = await startServer(5196);
+  try {
+    const owner = await registerAt(server, "satchel-owner@example.com");
+    const other = await registerAt(server, "satchel-other@example.com");
+    const blob = `v2.0.${randomB64(12)}.${"A".repeat(64)}`;
+    const at = (method, path, body, token = owner.body.token) => callTo(server.base, method, path, body, token);
+    assert.equal((await at("POST", "/satchel", { id: "test-shape", encData: blob })).status, 201);
+    assert.equal((await at("PUT", "/satchel/test-shape", { encData: blob + "AAAA" }, other.body.token)).status, 404);
+    assert.equal((await at("PUT", "/satchel/test-shape", { encData: blob + "AAAA" })).status, 204);
+    const listed = await at("GET", "/satchel");
+    assert.equal(listed.body.items[0].encData, blob + "AAAA");
+    await at("DELETE", "/satchel/test-shape");
+    assert.equal((await at("PUT", "/satchel/test-shape", { encData: blob })).status, 404);
+    assert.equal((await at("GET", "/satchel")).body.items.length, 0);
+  } finally { await stopServer(server); }
+});
+
+test("untrusted clients cannot reset rate limits by spoofing forwarding headers", async () => {
+  const server = await startServer(5196, { TRUST_PROXY: "192.0.2.10" });
+  try {
+    for (let i = 0; i < 20; i++) {
+      const res = await fetch(server.base + "/auth/login", {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": `203.0.113.${i + 1}` }, body: "{}",
+      });
+      assert.equal(res.status, 400);
+    }
+    const denied = await fetch(server.base + "/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "203.0.113.222" }, body: "{}",
+    });
+    assert.equal(denied.status, 429);
+  } finally { await stopServer(server); }
 });

@@ -90,8 +90,7 @@ export const App = () => {
       if (state.user === lastUser) return;
       const signedIn = !!state.user && !lastUser;
       lastUser = state.user;
-      if (signedIn) void satchel.pullRemote();
-      else void satchel.init();
+      if (signedIn || !state.user) void satchel.init();
     });
 
     let lastNonce = useStore.getState().sceneNonce;
@@ -106,7 +105,10 @@ export const App = () => {
     });
 
     const onOnline = () => {
-      if (!useStore.getState().viewerMode) syncManager.onOnline();
+      if (!useStore.getState().viewerMode) {
+        syncManager.onOnline();
+        void satchel.pullRemote();
+      }
     };
     const onHide = () => {
       if (useStore.getState().viewerMode) return;

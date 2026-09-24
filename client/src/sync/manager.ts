@@ -1,4 +1,5 @@
 import { useStore } from "../store";
+import { collab } from "../collab/manager";
 import type { SceneMeta } from "../types";
 import { serializeScene, type SceneDocument } from "../export/json";
 import { parseSceneFile } from "../export/json";
@@ -33,6 +34,7 @@ import {
 import { assertPasskey, createPasskey, PasskeyError } from "../crypto/passkey";
 import { generateRecoveryCode, recoveryKeysFromCode } from "../crypto/recovery";
 import {
+  type PendingFolderChange,
   clearAllLocalData,
   clearEncKey,
   loadKeyMaterial,
@@ -91,6 +93,11 @@ class SyncManager {
   private quotaNotified = false;
   private pendingPush = new Set<string>();
   private pendingDeletes = new Set<string>();
+  private pendingFolders = new Map<string, PendingFolderChange>();
+
+  private hasPending() {
+    return this.pendingPush.size > 0 || this.pendingDeletes.size > 0 || this.pendingFolders.size > 0;
+  }
   private revisions = new Map<string, number>();
   private openRequest = 0;
   private lastOpenSceneId: string | null = null;
@@ -131,7 +138,7 @@ class SyncManager {
         await this.hydrateFromCache();
         await this.refreshRemote();
         await this.openLastScene();
-        if (this.pendingPush.size || this.pendingDeletes.size) this.scheduleRetry();
+        if (this.hasPending()) this.scheduleRetry();
         return;
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
@@ -242,6 +249,7 @@ class SyncManager {
     if (!cache) return false;
     if (cache.userId && cache.userId !== this.userId) return false;
     this.pendingDeletes = new Set(cache.pendingDeletes ?? []);
+    this.pendingFolders = new Map((cache.pendingFolders ?? []).map((change) => [change.id, change]));
     s.setScenes(
       cache.scenes.map(
         (sc): SceneMeta => ({
@@ -275,6 +283,7 @@ class SyncManager {
     await saveRemoteCache({
       userId: this.userId ?? undefined,
       pendingDeletes: [...this.pendingDeletes],
+      pendingFolders: [...this.pendingFolders.values()],
       scenes: s.scenes.map((sc) => ({
         id: sc.id,
         title: sc.title,
@@ -298,6 +307,7 @@ class SyncManager {
     const s = useStore.getState();
     if (!this.ring) return;
     const deletedAtStart = new Set(this.pendingDeletes);
+    const deletedFoldersAtStart = new Set([...this.pendingFolders.values()].filter((f) => f.kind === "delete").map((f) => f.id));
     const { scenes, folders, sceneBytes, quotaBytes } = await api.listScenes();
     s.setStorage({ sceneBytes, quotaBytes });
     const existing = new Map(s.scenes.map((sc) => [sc.id, sc]));
@@ -323,7 +333,7 @@ class SyncManager {
         id: remote.id,
         title,
         folderId: remote.folderId,
-        remoteVersion: remote.version,
+        remoteVersion: prev?.remoteVersion ?? remote.version,
         createdAt: remote.createdAt,
         updatedAt: remote.updatedAt,
         dirty: prev?.dirty ?? false,
@@ -359,8 +369,22 @@ class SyncManager {
       !this.pendingDeletes.has(meta.id) && !deletedAtStart.has(meta.id) &&
       (!existing.has(meta.id) || current.some((sc) => sc.id === meta.id)),
     ));
-    s.setFolders(folderMetas);
-    s.setSyncStatus(this.pendingPush.size || this.pendingDeletes.size ? "syncing" : "synced");
+    const currentFolders = useStore.getState().folders;
+    const folderById = new Map(s.folders.map((f) => [f.id, f]));
+    const mergedFolders = folderMetas.filter((f) =>
+      !deletedFoldersAtStart.has(f.id) && this.pendingFolders.get(f.id)?.kind !== "delete" &&
+      (!folderById.has(f.id) || currentFolders.some((current) => current.id === f.id)),
+    ).map((f) => {
+      const pending = this.pendingFolders.get(f.id);
+      const current = currentFolders.find((current) => current.id === f.id);
+      if (pending?.kind === "rename") return { ...f, name: pending.name, color: pending.color };
+      return current && current !== folderById.get(f.id) ? current : f;
+    });
+    for (const f of currentFolders) {
+      if (!folderById.has(f.id) && !mergedFolders.some((current) => current.id === f.id)) mergedFolders.push(f);
+    }
+    s.setFolders(mergedFolders);
+    s.setSyncStatus(this.hasPending() ? "syncing" : "synced");
     await this.persistCache();
   }
 
@@ -459,15 +483,36 @@ class SyncManager {
     this.updateMeta(id, { dirty, remoteVersion: version, ...(updatedAt === undefined ? {} : { updatedAt }) });
   }
 
+  private localSaveRevision = 0;
+
   onSceneMutated() {
+    this.localSaveRevision++;
+    useStore.getState().setLocalSaveStatus("saving");
     if (this.saveTimer) window.clearTimeout(this.saveTimer);
     this.saveTimer = window.setTimeout(() => {
       this.saveTimer = null;
-      void this.flushNow();
+      void this.flushNow().catch(() => undefined);
     }, AUTOSAVE_DEBOUNCE);
   }
 
   async flushNow() {
+    const revision = this.localSaveRevision;
+    const sceneId = useStore.getState().sceneId;
+    useStore.getState().setLocalSaveStatus("saving");
+    try {
+      await this.persistCurrentScene();
+      if (revision === this.localSaveRevision && sceneId === useStore.getState().sceneId) {
+        useStore.getState().setLocalSaveStatus("saved");
+      }
+    } catch (error) {
+      if (revision === this.localSaveRevision && sceneId === useStore.getState().sceneId) {
+        useStore.getState().setLocalSaveStatus("error");
+      }
+      throw error;
+    }
+  }
+
+  private async persistCurrentScene() {
     if (this.saveTimer) {
       window.clearTimeout(this.saveTimer);
       this.saveTimer = null;
@@ -504,7 +549,22 @@ class SyncManager {
     s.setSyncStatus("syncing");
     let quotaHit = false;
     try {
-      while (this.pendingPush.size || this.pendingDeletes.size) {
+      while (this.hasPending()) {
+        if (this.pendingFolders.size) {
+          const change = this.pendingFolders.values().next().value!;
+          if (change.kind === "delete") await api.deleteFolder(change.id);
+          else {
+            const encName = await encryptRecord(this.ring, this.ctx("folderName", change.id), encodeFolderName(change.name, change.color));
+            try { await api.renameFolder(change.id, encName); }
+            catch (err) {
+              if (!(err instanceof ApiError && err.status === 404)) throw err;
+              useStore.getState().setFolders(useStore.getState().folders.filter((f) => f.id !== change.id));
+            }
+          }
+          if (this.pendingFolders.get(change.id) === change) this.pendingFolders.delete(change.id);
+          await this.persistCache();
+          continue;
+        }
         if (this.pendingDeletes.size) {
           const id = [...this.pendingDeletes][0];
           try {
@@ -519,11 +579,18 @@ class SyncManager {
         }
         const id = [...this.pendingPush][0];
         const revision = this.revisions.get(id) ?? 0;
-        const meta = useStore.getState().scenes.find((sc) => sc.id === id);
-        const doc = await loadSceneDoc(id);
-        if (!meta || !doc) {
+        let meta = useStore.getState().scenes.find((sc) => sc.id === id);
+        let doc = await loadSceneDoc(id);
+        if (!meta) {
           this.pendingPush.delete(id);
           continue;
+        }
+        if (!doc) {
+          const remote = await api.getScene(id);
+          doc = await decryptRecordJSON<SceneDocument>(this.ring, this.ctx("scene", id), remote.encData);
+          await saveSceneDoc(id, doc);
+          this.updateMeta(id, { remoteVersion: remote.version });
+          meta = { ...meta, remoteVersion: remote.version };
         }
         const encData = await encryptRecordJSON(this.ring, this.ctx("scene", id), doc);
         const encTitle = await encryptRecord(
@@ -635,8 +702,7 @@ class SyncManager {
         remote.encData,
       );
       if (JSON.stringify(remoteDoc) === JSON.stringify(localDoc)) {
-        this.acknowledgePush(id, revision, remote.version);
-        s.setSyncStatus("synced");
+        this.updateMeta(id, { remoteVersion: remote.version });
         return;
       }
       const meta = s.scenes.find((sc) => sc.id === id);
@@ -697,14 +763,14 @@ class SyncManager {
     if (this.retryTimer) return;
     this.retryTimer = window.setTimeout(() => {
       this.retryTimer = null;
-      if (this.pendingPush.size || this.pendingDeletes.size) void this.pushPending();
+      if (this.hasPending()) void this.pushPending();
       else void this.refreshRemote().catch(() => this.scheduleRetry());
     }, RETRY_INTERVAL);
   }
 
   onOnline() {
     if (this.guestMode) return;
-    if (this.pendingPush.size || this.pendingDeletes.size) void this.pushPending();
+    if (this.hasPending()) void this.pushPending();
     else void this.refreshRemote().catch(() => void 0);
   }
 
@@ -916,7 +982,14 @@ class SyncManager {
     this.guestMode = false;
     s.setUser({ email, token });
     s.setSyncStatus("syncing");
+    await this.releaseRoomScene();
     const guestDoc = await loadGuestDoc();
+    this.pendingPush.clear();
+    this.pendingDeletes.clear();
+    this.pendingFolders.clear();
+    s.setScenes([]);
+    s.setFolders([]);
+    await this.hydrateFromCache();
     await this.refreshRemote();
     const state = useStore.getState();
     if (!state.scenes.length) {
@@ -935,6 +1008,7 @@ class SyncManager {
     } else {
       await this.openLastScene();
     }
+    if (this.hasPending()) this.scheduleRetry();
     void import("../publish")
       .then((m) => m.syncPublishRecords())
       .catch(() => void 0);
@@ -943,6 +1017,7 @@ class SyncManager {
   async signOut(clearData = true) {
     ++this.openRequest;
     const s = useStore.getState();
+    await this.releaseRoomScene();
     await this.flushNow().catch(() => void 0);
     setToken(null);
     this.userId = null;
@@ -950,6 +1025,9 @@ class SyncManager {
     this.ring = null;
     this.pendingPush.clear();
     this.pendingDeletes.clear();
+    this.pendingFolders.clear();
+    if (this.retryTimer) window.clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.revisions.clear();
     this.quotaNotified = false;
     this.lastOpenSceneId = null;
@@ -1167,26 +1245,19 @@ class SyncManager {
     }
   }
 
+  private async queueFolder(change: PendingFolderChange) {
+    this.pendingFolders.set(change.id, change);
+    await this.persistCache();
+    await this.pushPending();
+  }
+
   async renameFolder(id: string, name: string) {
     const s = useStore.getState();
     if (!this.ring) return;
-    const color = s.folders.find((f) => f.id === id)?.color ?? null;
-    s.setFolders(
-      s.folders
-        .map((f) => (f.id === id ? { ...f, name } : f))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    );
-    try {
-      const encName = await encryptRecord(
-        this.ring,
-        this.ctx("folderName", id),
-        encodeFolderName(name, color),
-      );
-      await api.renameFolder(id, encName);
-      await this.persistCache();
-    } catch {
-      s.toast("Rename will sync when you're back online", "info");
-    }
+    const folder = s.folders.find((f) => f.id === id);
+    if (!folder) return;
+    s.setFolders(s.folders.map((f) => f.id === id ? { ...f, name } : f).sort((a, b) => a.name.localeCompare(b.name)));
+    await this.queueFolder({ kind: "rename", id, name, color: folder.color ?? null });
   }
 
   async setFolderColor(id: string, color: string | null) {
@@ -1194,32 +1265,15 @@ class SyncManager {
     if (!this.ring) return;
     const folder = s.folders.find((f) => f.id === id);
     if (!folder || folder.color === color) return;
-    s.setFolders(s.folders.map((f) => (f.id === id ? { ...f, color } : f)));
-    try {
-      const encName = await encryptRecord(
-        this.ring,
-        this.ctx("folderName", id),
-        encodeFolderName(folder.name, color),
-      );
-      await api.renameFolder(id, encName);
-      await this.persistCache();
-    } catch {
-      s.toast("Color will sync when you're back online", "info");
-    }
+    s.setFolders(s.folders.map((f) => f.id === id ? { ...f, color } : f));
+    await this.queueFolder({ kind: "rename", id, name: folder.name, color });
   }
 
   async deleteFolder(id: string) {
     const s = useStore.getState();
     s.setFolders(s.folders.filter((f) => f.id !== id));
-    s.setScenes(
-      s.scenes.map((sc) => (sc.folderId === id ? { ...sc, folderId: null } : sc)),
-    );
-    try {
-      await api.deleteFolder(id);
-      await this.persistCache();
-    } catch {
-      s.toast("Delete will finish when you're back online", "info");
-    }
+    s.setScenes(s.scenes.map((sc) => sc.folderId === id ? { ...sc, folderId: null } : sc));
+    await this.queueFolder({ kind: "delete", id });
   }
 
   async deleteAccount() {
@@ -1307,6 +1361,7 @@ class SyncManager {
 
   async releaseRoomScene(): Promise<boolean> {
     if (!this.roomSceneId) return false;
+    if (collab.currentRoomId()) await collab.leave({ silent: true, keepScene: true });
     await this.flushNow();
     if (!(await loadRoomResume(this.roomSceneId))) {
       await deleteRoomDoc(this.roomSceneId);

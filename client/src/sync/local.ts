@@ -20,7 +20,12 @@ const RESUME_SLOT = "lakar:room-resume";
 const RESUME_TTL = ROOM_RESUME_TTL;
 const MAX_RESUMES = MAX_ROOM_RESUMES;
 
+export type PendingFolderChange =
+  | { kind: "rename"; id: string; name: string; color: string | null }
+  | { kind: "delete"; id: string };
+
 export interface CachedRemoteState {
+  pendingFolders?: PendingFolderChange[];
   userId?: string;
   pendingDeletes?: string[];
   scenes: {

@@ -39,14 +39,17 @@ function setup(saved = null) {
     constructor(status, code = "network") { super(code); this.status = status; this.code = code; }
   }
   for (const [method, key] of Object.entries({
-    setScenes: "scenes", setFolders: "folders", setStorage: "storage", setSyncStatus: "status",
-    setCanvasBg: "canvasBg", setSceneTitle: "sceneTitle",
+    setLocalSaveStatus: "localSaveStatus", setScenes: "scenes", setFolders: "folders", setStorage: "storage", setSyncStatus: "status",
+    setCanvasBg: "canvasBg", setSceneTitle: "sceneTitle", setUser: "user",
   })) state[method] = (value) => { state = { ...state, [key]: value }; };
   state.replaceElements = (elements) => { state = { ...state, elements, sceneNonce: state.sceneNonce + 1 }; };
   state.setScene = (sceneId, sceneTitle) => { state = { ...state, sceneId, sceneTitle }; };
   state.clearSelection = () => {};
   state.toast = (message, type) => { toasts.push({ message, type }); };
   const context = createContext({
+    setToken: () => {}, loadGuestDoc: async () => null,
+    collab: { currentRoomId: () => null, leave: async () => {} },
+    saveRoomDoc: async () => {}, deleteRoomDoc: async () => {},
     api, ApiError, crypto, useStore: { getState: () => state },
     loadSceneDoc: async (id) => structuredClone(docs.get(id) ?? null),
     saveSceneDoc: async (id, value) => { docs.set(id, structuredClone(value)); },
@@ -72,7 +75,7 @@ function setup(saved = null) {
   runInContext(code, context);
   const manager = context.manager;
   manager.userId = "user"; manager.ring = {}; manager.guestMode = false;
-  return { manager, api, docs, timers, toasts, ApiError, state: () => state, cache: () => cache };
+  return { context, manager, api, docs, timers, toasts, ApiError, state: () => state, cache: () => cache };
 }
 
 test("an edit saved during an upload is uploaded again with the acknowledged version", async () => {
@@ -260,4 +263,125 @@ test("deleting the active scene opens the remaining scene without re-saving the 
   assert.equal(h.state().sceneId, "b");
   assert.equal(h.docs.has("a"), false);
   assert.equal(h.manager.pendingPush.has("a"), false);
+});
+
+test("local saving remains pending when a newer edit arrives during a write", async () => {
+  const h = setup();
+  const write = deferred();
+  h.manager.persistCurrentScene = () => write.promise;
+  h.manager.onSceneMutated();
+  assert.equal(h.state().localSaveStatus, "saving");
+  const flush = h.manager.flushNow();
+  h.manager.onSceneMutated();
+  write.resolve();
+  await flush;
+  assert.equal(h.state().localSaveStatus, "saving");
+  await h.manager.flushNow();
+  assert.equal(h.state().localSaveStatus, "saved");
+});
+
+test("local save failures are visible and a successful retry clears the error", async () => {
+  const h = setup();
+  h.manager.persistCurrentScene = async () => { throw new Error("disk full"); };
+  await assert.rejects(h.manager.flushNow(), /disk full/);
+  assert.equal(h.state().localSaveStatus, "error");
+  h.manager.persistCurrentScene = async () => {};
+  await h.manager.flushNow();
+  assert.equal(h.state().localSaveStatus, "saved");
+});
+
+
+test("refreshing a listing does not advance the edit base of the active document", async () => {
+  const h = setup(); h.state().setScenes([meta("a", false)]);
+  h.api.listScenes = async () => ({ scenes: [{ ...meta("a", false), encTitle: "a", version: 7 }], folders: [] });
+  await h.manager.refreshRemote();
+  assert.equal(h.state().scenes[0].remoteVersion, 1);
+  const writes = [];
+  h.api.updateScene = async (_id, body) => { writes.push(body); throw new h.ApiError(0); };
+  h.state().replaceElements(["local edit"]); await h.manager.flushNow();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(writes[0].version, 1);
+  assert.equal(h.state().scenes[0].dirty, true);
+});
+
+test("reauthentication restores dirty cached work and pending deletions", async () => {
+  const cache = { userId: "user", scenes: [{ ...meta(), version: 1 }], folders: [], lastOpenSceneId: "a", pendingDeletes: ["b"] };
+  const h = setup(cache); h.docs.set("a", doc("unsynced work"));
+  h.state().setScenes([]); h.state().setScene(null, "Scratchpad");
+  h.api.listScenes = async () => ({ scenes: [{ id: "a", version: 7, encTitle: "a" }, { id: "b", version: 1, encTitle: "b" }], folders: [] });
+  h.api.getScene = async () => { assert.fail("Dirty local work must not be downloaded over"); };
+  await h.manager.completeAuth("token", "test@example.com");
+  assert.deepEqual(h.docs.get("a"), doc("unsynced work"));
+  assert.equal(h.state().scenes[0].remoteVersion, 1);
+  assert.equal(h.manager.pendingPush.has("a"), true);
+  assert.equal(h.manager.pendingDeletes.has("b"), true);
+  assert.equal(h.timers.size, 1);
+});
+
+test("opening a private scene waits for the room broadcaster to detach", async () => {
+  const h = setup(); h.state().setScenes([meta("b", false)]); h.state().setScene(null, "Room");
+  h.manager.roomSceneId = "room";
+  const started = deferred(); const detached = deferred(); let live = true;
+  h.context.collab.currentRoomId = () => live ? "room" : null;
+  h.context.collab.leave = async (options) => { assert.equal(options.keepScene, true); started.resolve(); await detached.promise; live = false; };
+  h.api.getScene = async () => { assert.equal(live, false); return { version: 1, encData: JSON.stringify(doc("private")) }; };
+  const opening = h.manager.openScene("b"); await started.promise;
+  assert.deepEqual(h.state().elements, ["old"]);
+  detached.resolve(); await opening;
+  assert.equal(live, false);
+  assert.deepEqual(h.state().elements, ["private"]);
+  assert.equal(h.manager.inRoomScene(), false);
+});
+
+test("offline folder rename and color persist together and retry after reload", async () => {
+  const h = setup(); h.state().setScenes([meta("a", false)]);
+  h.state().setFolders([{ id: "folder", name: "old", color: null, createdAt: 1 }]);
+  h.api.renameFolder = async () => { throw new h.ApiError(0); };
+  await h.manager.renameFolder("folder", "renamed");
+  await h.manager.setFolderColor("folder", "#ff0000");
+  assert.equal(h.cache().pendingFolders.length, 1);
+  assert.equal(h.timers.size, 1);
+  const r = setup(h.cache()); await r.manager.hydrateFromCache();
+  r.api.listScenes = async () => ({ scenes: [], folders: [{ id: "folder", encName: "old", createdAt: 1 }] });
+  await r.manager.refreshRemote();
+  assert.equal(r.state().folders[0].name, "renamed");
+  const writes = []; r.api.renameFolder = async (id, name) => writes.push({ id, name });
+  await r.manager.pushPending();
+  assert.deepEqual(JSON.parse(writes[0].name), { n: "renamed", c: "#ff0000" });
+  assert.deepEqual(r.cache().pendingFolders, []);
+});
+
+test("offline folder deletion stays hidden after reload and retries", async () => {
+  const h = setup(); h.state().setFolders([{ id: "folder", name: "old", color: null }]);
+  h.api.deleteFolder = async () => { throw new h.ApiError(0); };
+  await h.manager.deleteFolder("folder");
+  const r = setup(h.cache()); await r.manager.hydrateFromCache();
+  r.api.listScenes = async () => ({ scenes: [], folders: [{ id: "folder", encName: "old" }] });
+  await r.manager.refreshRemote(); assert.equal(r.state().folders.length, 0);
+  const deleted = []; r.api.deleteFolder = async (id) => deleted.push(id);
+  r.manager.pendingPush.clear(); await r.manager.pushPending();
+  assert.deepEqual(deleted, ["folder"]); assert.deepEqual(r.cache().pendingFolders, []);
+});
+
+test("queued metadata changes fetch an uncached document without discarding the operation", async () => {
+  const h = setup(); h.docs.delete("b"); h.state().setScenes([meta("a", false), meta("b", false)]);
+  h.api.updateScene = async () => { throw new h.ApiError(0); };
+  await h.manager.renameScene("b", "renamed");
+  await h.manager.moveSceneToFolder("b", "folder");
+  h.api.getScene = async () => ({ version: 7, encData: JSON.stringify(doc("other device")) });
+  const writes = []; h.api.updateScene = async (id, body) => { writes.push(body); return { version: 8 }; };
+  await h.manager.pushPending();
+  assert.equal(writes[0].encTitle, "renamed"); assert.equal(writes[0].folderId, "folder");
+  assert.equal(writes[0].version, 7);
+  assert.deepEqual(JSON.parse(writes[0].encData), doc("other device"));
+  assert.equal(h.manager.pendingPush.has("b"), false);
+});
+
+test("a metadata conflict with identical content retries the title instead of acknowledging it away", async () => {
+  const h = setup(); h.manager.pendingPush.add("a");
+  const writes = [];
+  h.api.updateScene = async (_id, body) => { writes.push(body); if (writes.length === 1) throw new h.ApiError(409); return { version: 8 }; };
+  h.api.getScene = async () => ({ version: 7, encData: JSON.stringify(doc("old")) });
+  await h.manager.pushPending();
+  assert.equal(writes.length, 2); assert.equal(writes[1].version, 7); assert.equal(writes[1].encTitle, "a");
 });

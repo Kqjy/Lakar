@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import {
   Backpack,
+  Ellipsis,
   Circle,
   Diamond,
   Eraser,
@@ -45,51 +47,66 @@ export const Toolbar = () => {
   const satchelOpen = useStore((s) => s.satchelOpen);
   const setSatchelOpen = useStore((s) => s.setSatchelOpen);
 
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const primary = ["selection", "hand", "rectangle", "diamond", "ellipse", "arrow", "line", "freedraw", "text", "eraser"];
+  const secondary = TOOLS.filter(({ tool }) => !primary.includes(tool));
+  const activeSecondary = secondary.find(({ tool }) => tool === activeTool);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    moreRef.current?.querySelector<HTMLButtonElement>(".more-panel button")?.focus();
+    const close = (e: PointerEvent) => {
+      if (!moreRef.current?.contains(e.target as Node)) setMoreOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [moreOpen]);
+
+  const pick = (action: () => void) => {
+    action();
+    setMoreOpen(false);
+    triggerRef.current?.focus();
+  };
+
   return (
     <div className="island toolbar" role="toolbar" aria-label="Drawing tools">
-      <button
-        className={`tool-btn tool-lock ${toolLocked ? "active" : ""}`}
-        title={
-          toolLocked
-            ? "Keep tool active after drawing — on (Q)"
-            : "Keep tool active after drawing — off (Q)"
-        }
-        aria-pressed={toolLocked}
-        onClick={() => setToolLocked(!toolLocked)}
-      >
-        {toolLocked ? <Lock size={15} /> : <LockOpen size={15} />}
-      </button>
-      <div className="toolbar-divider" />
-      {TOOLS.map(({ tool, icon, hint, title }) => (
-        <button
-          key={tool}
-          className={`tool-btn ${activeTool === tool ? "active" : ""}`}
-          title={title}
-          aria-pressed={activeTool === tool}
-          onClick={() => setTool(tool)}
-        >
-          {icon}
-          <span className="key-hint">{hint}</span>
+      {TOOLS.filter(({ tool }) => primary.includes(tool)).map(({ tool, icon, label, hint, title }) => (
+        <button key={tool} className={`tool-btn ${activeTool === tool ? "active" : ""}`}
+          title={title} aria-label={label} aria-pressed={activeTool === tool} onClick={() => setTool(tool)}>
+          {icon}<span className="key-hint">{hint}</span>
         </button>
       ))}
-      <button
-        className="tool-btn"
-        title="Insert image — 9"
-        onClick={() => insertImageFromPicker()}
-      >
-        <ImageIcon size={18} />
-        <span className="key-hint">9</span>
-      </button>
       <div className="toolbar-divider" />
-      <button
-        className={`tool-btn ${satchelOpen ? "active" : ""}`}
-        title="Satchel — ready-made shapes and icons (S)"
-        aria-pressed={satchelOpen}
-        onClick={() => setSatchelOpen(!satchelOpen)}
-      >
-        <Backpack size={18} />
-        <span className="key-hint">S</span>
-      </button>
+      <div className="more-tools" ref={moreRef} onKeyDown={(e) => {
+        if (e.key === "Escape") { e.stopPropagation(); setMoreOpen(false); triggerRef.current?.focus(); }
+      }}>
+        <button ref={triggerRef} className={`tool-btn more-trigger ${activeSecondary || moreOpen ? "active" : ""}`}
+          aria-label={activeSecondary ? `More tools — ${activeSecondary.label} selected` : "More tools"}
+          aria-expanded={moreOpen} aria-controls="more-tools-panel" onClick={() => setMoreOpen(!moreOpen)}>
+          {activeSecondary?.icon ?? <Ellipsis size={18} />}<span>More</span>
+        </button>
+        {moreOpen && <div className="island more-panel" id="more-tools-panel" role="group" aria-label="More tools">
+          <div className="menu-heading">More tools</div>
+          {secondary.map(({ tool, icon, label, hint, title }) => (
+            <button key={tool} className="menu-item" title={title} aria-pressed={activeTool === tool}
+              onClick={() => pick(() => setTool(tool))}>
+              {icon}{label}<span className="shortcut">{hint}</span>
+            </button>
+          ))}
+          <button className="menu-item" onClick={() => pick(() => { void insertImageFromPicker(); })}>
+            <ImageIcon size={18} />Insert image<span className="shortcut">9</span>
+          </button>
+          <button className="menu-item" aria-pressed={satchelOpen} onClick={() => pick(() => setSatchelOpen(!satchelOpen))}>
+            <Backpack size={18} />Shapes & icons<span className="shortcut">S</span>
+          </button>
+          <div className="menu-sep" />
+          <button className="menu-item" aria-pressed={toolLocked} onClick={() => setToolLocked(!toolLocked)}>
+            {toolLocked ? <Lock size={15} /> : <LockOpen size={15} />}Keep tool active<span className="shortcut">Q</span>
+          </button>
+        </div>}
+      </div>
     </div>
   );
 };

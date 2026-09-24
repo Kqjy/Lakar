@@ -296,6 +296,7 @@ export const api = {
       id,
       encData,
     }),
+  updateSatchelItem: (id: string, encData: string) => request<void>("PUT", `/satchel/${id}`, { encData }),
   deleteSatchelItem: (id: string) => request<void>("DELETE", `/satchel/${id}`),
 
   listPublished: () =>

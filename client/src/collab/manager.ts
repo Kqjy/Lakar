@@ -81,6 +81,7 @@ type Wire =
       elements: LakarElement[];
       canvasBg?: WireReg;
       title?: WireReg;
+      order?: WireReg;
     }
   | { k: "ask-scene" }
   | {
@@ -88,6 +89,7 @@ type Wire =
       elements: LakarElement[];
       canvasBg: WireReg;
       title?: WireReg;
+      order?: WireReg;
     }
   | { k: "bye" };
 
@@ -168,6 +170,7 @@ class CollabManager {
   private sentVersions = new Map<string, number>();
   private bgReg: Reg | null = null;
   private titleReg: Reg | null = null;
+  private orderReg: Reg | null = null;
   private sceneReady = false;
   private askTimer: number | null = null;
   private broadcastTimer: number | null = null;
@@ -434,6 +437,7 @@ class CollabManager {
     this.sentVersions.clear();
     this.bgReg = null;
     this.titleReg = null;
+    this.orderReg = null;
     this.askedPeers.clear();
     this.peerMeta.clear();
     this.inbound.clear();
@@ -469,6 +473,7 @@ class CollabManager {
       };
 
       socket.onmessage = (event) => {
+        if (socket !== this.socket) return;
         let message: Record<string, unknown>;
         try {
           message = JSON.parse(event.data as string);
@@ -517,6 +522,7 @@ class CollabManager {
       socket.onerror = () => fail("network", "Could not reach the session server");
 
       socket.onclose = () => {
+        if (socket !== this.socket) return;
         if (!settled) {
           fail("network", "Could not reach the session server");
           return;
@@ -634,12 +640,14 @@ class CollabManager {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN || !this.keys) {
       return;
     }
+    const generation = this.generation;
     let cipher: string;
     try {
       cipher = await encryptString(this.keys.key, JSON.stringify(payload));
     } catch {
       return;
     }
+    if (generation !== this.generation) return;
     if (cipher.length <= CHUNK_CHARS) {
       this.rawSend(cipher, to);
       return;
@@ -647,7 +655,6 @@ class CollabManager {
     const total = Math.ceil(cipher.length / CHUNK_CHARS);
     const id = `${this.selfId ?? "s"}${this.outboundSeq++}`;
     const socket = this.socket;
-    const generation = this.generation;
     const run = this.sendChain.then(async () => {
       for (let i = 0; i < total; i++) {
         if (this.generation !== generation || this.socket !== socket) return;
@@ -739,6 +746,7 @@ class CollabManager {
 
   private async onWire(from: string, framed: string) {
     if (!this.keys) return;
+    const generation = this.generation;
     const ciphertext = this.reassemble(from, framed);
     if (ciphertext === null) return;
     let payload: Wire;
@@ -749,6 +757,7 @@ class CollabManager {
     } catch {
       return;
     }
+    if (generation !== this.generation) return;
     const s = useStore.getState();
 
     switch (payload.k) {
@@ -818,6 +827,7 @@ class CollabManager {
       case "update": {
         this.applyRemoteElements(payload.elements, payload.canvasBg);
         if (payload.title) this.applyRemoteTitle(payload.title);
+        if (payload.order) this.applyRemoteOrder(payload.order);
         break;
       }
       case "ask-scene": {
@@ -833,6 +843,7 @@ class CollabManager {
               ) as LakarElement[],
               canvasBg: this.bgReg ?? current.canvasBg,
               title: this.titleReg ?? current.sceneTitle,
+              order: this.orderReg ?? JSON.stringify(current.elements.map((el) => el.id)),
             },
             from,
           );
@@ -849,6 +860,7 @@ class CollabManager {
         this.sceneReady = true;
         this.sceneWarned = false;
         this.applyRemoteScene(payload.elements, payload.canvasBg, payload.title);
+        if (payload.order) this.applyRemoteOrder(payload.order);
         this.queueBroadcast();
         void this.rememberRoom();
         break;
@@ -923,6 +935,28 @@ class CollabManager {
     }
   }
 
+  private applyRemoteOrder(value: WireReg) {
+    const remote = asReg(value);
+    if (!remote) return;
+    let ids: unknown;
+    try { ids = JSON.parse(remote.text); } catch { return; }
+    if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string") || new Set(ids).size !== ids.length) return;
+    if (!regWins(this.orderReg, remote)) {
+      if (this.orderReg?.text !== remote.text) this.scheduleRegResend();
+      return;
+    }
+    this.orderReg = remote.version === -1 ? bumped(this.orderReg, remote.text) : remote;
+    const s = useStore.getState();
+    const byId = new Map(s.elements.map((el) => [el.id, el]));
+    const ordered: LakarElement[] = [];
+    for (const id of ids as string[]) {
+      const el = byId.get(id);
+      if (el) { ordered.push(el); byId.delete(id); }
+    }
+    ordered.push(...byId.values());
+    if (ordered.some((el, i) => el.id !== s.elements[i]?.id)) s.replaceElements(ordered);
+  }
+
   private scheduleRegResend() {
     this.regResend = true;
     this.queueBroadcast();
@@ -968,9 +1002,12 @@ class CollabManager {
 
   private async loadServerSnapshot(): Promise<boolean> {
     if (!this.roomId || !this.keys) return false;
+    const generation = this.generation;
+    const keys = this.keys;
     try {
       const snapshot = await api.getRoomSnapshot(this.roomId, this.keys.verifier);
-      const plain = await decryptString(this.keys.key, snapshot.encData);
+      const plain = await decryptString(keys.key, snapshot.encData);
+      if (generation !== this.generation) return false;
       const parsed = parseSceneFile(plain, true);
       this.applyRemoteScene(parsed.elements, parsed.canvasBg, parsed.title);
       return true;
@@ -1041,15 +1078,19 @@ class CollabManager {
       this.sceneReady && !!title && title !== this.titleReg?.text;
     const resend = this.regResend;
     this.regResend = false;
-    if (!changed.length && !bgChanged && !titleChanged && !resend) return;
+    const order = JSON.stringify(s.elements.map((el) => el.id));
+    const orderChanged = this.sceneReady && order !== this.orderReg?.text;
+    if (!changed.length && !bgChanged && !titleChanged && !orderChanged && !resend) return;
     for (const el of changed) this.sentVersions.set(el.id, el.version);
     if (bgChanged) this.bgReg = bumped(this.bgReg, s.canvasBg);
     if (titleChanged) this.titleReg = bumped(this.titleReg, title);
+    if (orderChanged) this.orderReg = bumped(this.orderReg, order);
     await this.sendWire({
       k: "update",
       elements: JSON.parse(JSON.stringify(changed)) as LakarElement[],
       canvasBg: bgChanged || resend ? this.bgReg ?? undefined : undefined,
       title: titleChanged || resend ? this.titleReg ?? undefined : undefined,
+      order: orderChanged || resend ? this.orderReg ?? undefined : undefined,
     });
   }
 
@@ -1240,6 +1281,7 @@ class CollabManager {
       this.sentVersions.clear();
       this.bgReg = null;
       this.titleReg = null;
+      this.orderReg = null;
       void this.connect().catch(() => this.scheduleReconnect());
     }, delay);
   }
@@ -1336,6 +1378,7 @@ class CollabManager {
     this.sentVersions.clear();
     this.bgReg = null;
     this.titleReg = null;
+    this.orderReg = null;
     this.sceneReady = false;
     this.seededFromLocal = false;
     this.snapshotWarned = false;

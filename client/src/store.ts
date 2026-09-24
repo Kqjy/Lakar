@@ -144,6 +144,8 @@ export interface AppStore {
   lockedAccount: LockedAccount | null;
   pendingRecoveryCode: string | null;
   pendingInviteCode: string | null;
+  localSaveStatus: "idle" | "saving" | "saved" | "error";
+  setLocalSaveStatus: (status: "idle" | "saving" | "saved" | "error") => void;
   syncStatus: SyncStatus;
   storage: StorageUsage | null;
   scenes: SceneMeta[];
@@ -253,6 +255,8 @@ export const useStore = create<AppStore>((set, get) => ({
   lockedAccount: null,
   pendingRecoveryCode: null,
   pendingInviteCode: null,
+  localSaveStatus: "idle",
+  setLocalSaveStatus: (localSaveStatus) => set({ localSaveStatus }),
   syncStatus: "offline-guest",
   storage: null,
   scenes: [],

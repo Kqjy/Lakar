@@ -4,11 +4,11 @@ services:
     container_name: lakar
     restart: unless-stopped
     ports:
-      - "5191:5191"
+      - "127.0.0.1:5191:5191"
     volumes:
       - lakar-data:/data
     environment:
-      - TRUST_PROXY=1
+      - TRUST_PROXY=${TRUST_PROXY:-0}
 
 volumes:
   lakar-data:

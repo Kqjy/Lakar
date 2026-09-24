@@ -235,6 +235,9 @@ export const stmts = {
   createSatchelItem: db.prepare(
     "INSERT INTO satchel_items (id, user_id, enc_data, created_at) VALUES (?, ?, ?, ?)",
   ),
+  updateSatchelItem: db.prepare(
+    "UPDATE satchel_items SET enc_data = ? WHERE id = ? AND user_id = ?",
+  ),
   deleteSatchelItem: db.prepare(
     "DELETE FROM satchel_items WHERE id = ? AND user_id = ?",
   ),
@@ -252,7 +255,7 @@ export const stmts = {
      FROM published WHERE id = ?`,
   ),
   publishedOwner: db.prepare(
-    "SELECT id FROM published WHERE id = ? AND user_id = ?",
+    "SELECT id, size FROM published WHERE id = ? AND user_id = ?",
   ),
   publishedBySceneId: db.prepare(
     "SELECT id FROM published WHERE user_id = ? AND scene_id = ?",

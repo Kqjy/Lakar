@@ -26,6 +26,7 @@ export const TopLeft = () => {
   const setCanvasBg = useStore((s) => s.setCanvasBg);
   const sceneTitle = useStore((s) => s.sceneTitle);
   const sceneId = useStore((s) => s.sceneId);
+  const localSaveStatus = useStore((s) => s.localSaveStatus);
   const syncStatus = useStore((s) => s.syncStatus);
   const setDialog = useStore((s) => s.setDialog);
   const toast = useStore((s) => s.toast);
@@ -66,6 +67,17 @@ export const TopLeft = () => {
     locked: "Locked — enter your password to decrypt",
     error: "Sync error",
   };
+
+  const visibleStatus = localSaveStatus === "error" ? "Couldn’t save on this device"
+    : localSaveStatus === "saving" ? "Saving…"
+    : syncStatus === "synced" ? "Synced"
+    : syncStatus === "syncing" ? "Syncing…"
+    : syncStatus === "error" ? "Cloud sync failed"
+    : syncStatus === "conflict" ? "Sync conflict"
+    : syncStatus === "locked" ? "Unlock to sync"
+    : localSaveStatus === "saved" ? (syncStatus === "offline" ? "Saved on this device · Offline" : "Saved on this device")
+    : "Local only";
+  const dotStatus = localSaveStatus === "error" ? "error" : localSaveStatus === "saving" ? "syncing" : syncStatus;
 
   const bgs = CANVAS_BACKGROUNDS;
 
@@ -167,10 +179,6 @@ export const TopLeft = () => {
         )}
       </div>
       <div className="island scene-chip">
-        <span
-          className={`sync-dot ${syncStatus}`}
-          title={statusLabel[syncStatus]}
-        />
         <input
           className="scene-title-input"
           value={titleDraft}
@@ -187,6 +195,10 @@ export const TopLeft = () => {
           aria-label="Scene title"
           title={statusLabel[syncStatus]}
         />
+      </div>
+      <div className="save-status" role="status" aria-live="polite" title={statusLabel[syncStatus]}>
+        <span className={`sync-dot ${dotStatus}`} aria-hidden="true" />
+        {visibleStatus}
       </div>
     </div>
   );

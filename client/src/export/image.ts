@@ -95,7 +95,14 @@ const escapeXML = (s: string) =>
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+const safeColor = (value: string) =>
+  /^(?:#[a-f0-9]{3,8}|[a-z]+|(?:rgb|hsl)a?\([\d\s.,%+\-]+\))$/i.test(value) ? value : "transparent";
+
+const safeImageURL = (value: string) =>
+  /^data:image\/(?:png|jpeg|webp|gif|svg\+xml|avif|bmp|x-icon);base64,[a-z0-9+/=\s]+$/i.test(value) ? value : "";
 
 export const exportSVG = ({
   elements,
@@ -117,7 +124,7 @@ export const exportSVG = ({
   );
   if (background) {
     parts.push(
-      `<rect width="100%" height="100%" fill="${themedColor(background, theme)}"/>`,
+      `<rect width="100%" height="100%" fill="${escapeXML(safeColor(themedColor(background, theme)))}"/>`,
     );
   }
 
@@ -125,7 +132,7 @@ export const exportSVG = ({
     const label = el.type === "arrow" ? getBoundText(visible, el.id) : undefined;
     if (label) {
       const maskId = `arrow-label-${visible.indexOf(el)}`;
-      parts.push(`<defs><mask id="${maskId}" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="white"/><rect x="${label.x + offX - 4}" y="${label.y + offY - 4}" width="${label.width + 8}" height="${label.height + 8}" fill="black"/></mask></defs><g mask="url(#${maskId})">`);
+      parts.push(`<defs><mask id="${maskId}" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="white"/><rect x="${label.x + offX - 4}" y="${label.y + offY - 4}" width="${Number(label.width) + 8}" height="${Number(label.height) + 8}" fill="black"/></mask></defs><g mask="url(#${maskId})">`);
     }
     const b = getElementBounds(el);
     const cx = (b.minX + b.maxX) / 2 + offX;
@@ -137,7 +144,7 @@ export const exportSVG = ({
 
     if (el.type === "image") {
       parts.push(
-        `<image href="${el.dataURL}" x="${(b.minX + offX).toFixed(2)}" y="${(
+        `<image href="${escapeXML(safeImageURL(el.dataURL))}" x="${(b.minX + offX).toFixed(2)}" y="${(
           b.minY + offY
         ).toFixed(2)}" width="${Math.abs(el.width).toFixed(2)}" height="${Math.abs(
           el.height,
@@ -156,7 +163,7 @@ export const exportSVG = ({
       );
       const lineH = el.fontSize * el.lineHeight;
       const baseline = el.fontSize * 0.82 + (lineH - el.fontSize) / 2;
-      const color = themedColor(el.strokeColor, theme);
+      const color = safeColor(themedColor(el.strokeColor, theme));
       const family = escapeXML(FONT_FAMILY_CSS[el.fontFamily]);
       lines.forEach((line, i) => {
         let dx = 0;
@@ -165,7 +172,7 @@ export const exportSVG = ({
         parts.push(
           `<text x="${(el.x + dx + offX).toFixed(2)}" y="${(
             el.y + i * lineH + baseline + offY
-          ).toFixed(2)}" font-family='${family}' font-size="${el.fontSize}" fill="${color}">${escapeXML(line)}</text>`,
+          ).toFixed(2)}" font-family='${family}' font-size="${escapeXML(String(el.fontSize))}" fill="${escapeXML(color)}">${escapeXML(line)}</text>`,
         );
       });
       parts.push("</g>");
@@ -179,10 +186,7 @@ export const exportSVG = ({
     if (el.type === "freedraw") {
       if (shape.freedrawD) {
         parts.push(
-          `<path d="${shape.freedrawD}" fill="${themedColor(
-            el.strokeColor,
-            theme,
-          )}" transform="translate(${lx.toFixed(2)} ${ly.toFixed(2)})"/>`,
+          `<path d="${escapeXML(shape.freedrawD)}" fill="${escapeXML(safeColor(themedColor(el.strokeColor, theme)))}" transform="translate(${lx.toFixed(2)} ${ly.toFixed(2)})"/>`,
         );
       }
       parts.push("</g>");
@@ -201,8 +205,8 @@ export const exportSVG = ({
         const fill = info.fill && info.fill !== "none" ? info.fill : "none";
         const stroked = info.stroke && info.stroke !== "none";
         parts.push(
-          `<path d="${info.d}" stroke="${info.stroke ?? "none"}" stroke-width="${info.strokeWidth}" fill="${fill}"${
-            dash && stroked ? ` stroke-dasharray="${dash}"` : ""
+          `<path d="${escapeXML(info.d)}" stroke="${escapeXML(safeColor(info.stroke ?? "none"))}" stroke-width="${escapeXML(String(info.strokeWidth))}" fill="${escapeXML(safeColor(fill))}"${
+            dash && stroked ? ` stroke-dasharray="${escapeXML(dash)}"` : ""
           } stroke-linecap="round"/>`,
         );
       }

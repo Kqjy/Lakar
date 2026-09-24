@@ -2507,3 +2507,41 @@ select {
   opacity: 1;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
+
+.starter-intro { margin: 0 0 20px; font-size: 14px; color: var(--text-dim); }
+.empty-hint { width: min(570px, calc(100vw - 40px)); }
+.starter-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
+.starter-card { pointer-events: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg-panel); color: var(--text-dim); box-shadow: 0 2px 5px #00000005; }
+.starter-card svg { color: var(--accent); margin-bottom: 4px; }
+.starter-card strong { font-size: 13px; color: var(--text); }
+.starter-card span { font-size: 12px; }
+.starter-card:hover { background: var(--accent-soft); border-color: var(--accent); }
+.more-tools { position: relative; }
+.more-trigger { width: 46px; height: 38px; gap: 0; font-size: 10px; }
+.more-panel { position: absolute; top: calc(100% + 14px); right: -5px; width: 230px; padding: 6px; max-height: calc(100dvh - 120px); overflow-y: auto; }
+.more-panel .menu-item[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.save-status { position: absolute; top: calc(100% + 7px); left: 3px; display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--text-dim); white-space: nowrap; background: var(--bg-panel); padding: 4px 7px; border-radius: 6px; }
+@media (min-width: 761px) and (max-width: 1200px) {
+  .toolbar { top: 92px; }
+}
+@media (max-width: 760px) {
+  .more-panel { position: fixed; top: auto; bottom: calc(58px + env(safe-area-inset-bottom)); right: 8px; }
+  .toolbar { overflow-x: auto; }
+  .toolbar .tool-btn { width: 34px; }
+  .toolbar .more-trigger { width: 40px; }
+  .toolbar-divider { margin: 0 2px; }
+  .starter-cards { gap: 8px; }
+  .starter-card { padding: 16px 6px; }
+  .starter-card span { display: none; }
+  .empty-hint .sub { font-size: 12px; }
+}
+@media (max-height: 520px) {
+  .starter-card { padding: 8px; }
+  .starter-card svg, .starter-card span { display: none; }
+  .starter-intro { margin-bottom: 10px; }
+  .starter-cards { margin-bottom: 10px; }
+}
+
+@media (max-width: 760px) {
+  .save-status { top: 102px; }
+}

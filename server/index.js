@@ -40,7 +40,8 @@ const quotaBytes = () => {
 
 const app = express();
 app.disable("x-powered-by");
-app.set("trust proxy", process.env.TRUST_PROXY === "1");
+const trustedProxy = process.env.TRUST_PROXY;
+app.set("trust proxy", trustedProxy === "1" ? "loopback" : trustedProxy && trustedProxy !== "0" ? trustedProxy.split(",").map((ip) => ip.trim()) : false);
 app.use(express.json({ limit: "16mb" }));
 
 app.use((req, res, next) => {
@@ -646,6 +647,16 @@ app.post("/api/satchel", authMiddleware, (req, res) => {
   res.status(201).json({ id, createdAt: now });
 });
 
+app.put("/api/satchel/:id", authMiddleware, (req, res) => {
+  const { encData } = req.body ?? {};
+  if (!isValidCiphertext(encData) || encData.length > MAX_SATCHEL_BYTES) {
+    return bad(res, 400, "invalid-payload", "Malformed encrypted payload");
+  }
+  const result = stmts.updateSatchelItem.run(encData, req.params.id, req.user.id);
+  if (!result.changes) return bad(res, 404, "not-found", "Shape no longer exists");
+  res.status(204).end();
+});
+
 app.delete("/api/satchel/:id", authMiddleware, (req, res) => {
   stmts.deleteSatchelItem.run(req.params.id, req.user.id);
   res.status(204).end();
@@ -715,8 +726,13 @@ app.put("/api/published/:id", authMiddleware, (req, res) => {
   if (!isValidCiphertext(encData) || encData.length > MAX_SCENE_BYTES) {
     return bad(res, 400, "invalid-payload", "Malformed encrypted payload");
   }
-  if (!stmts.publishedOwner.get(req.params.id, req.user.id)) {
+  const existing = stmts.publishedOwner.get(req.params.id, req.user.id);
+  if (!existing) {
     return bad(res, 404, "not-found", "No such published page");
+  }
+  const usage = stmts.countPublished.get(req.user.id);
+  if (encData.length > existing.size && usage.bytes - existing.size + encData.length > MAX_PUBLISHED_BYTES_PER_USER) {
+    return bad(res, 403, "quota", "Published pages are using too much space");
   }
   const now = Date.now();
   stmts.updatePublished.run(

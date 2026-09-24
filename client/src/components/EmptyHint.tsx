@@ -1,4 +1,6 @@
 import { useStore } from "../store";
+import { GitBranch, Network, Lightbulb } from "lucide-react";
+import { insertStarter } from "../starters";
 
 export const EmptyHint = () => {
   const sceneNonce = useStore((s) => s.sceneNonce);
@@ -13,6 +15,19 @@ export const EmptyHint = () => {
   return (
     <div className="empty-hint">
       <span className="hand">This page is yours</span>
+      <p className="starter-intro">Start with an example, or sketch your own idea.</p>
+      <div className="starter-cards">
+        {([
+          ["flowchart", "Flowchart", "Map a process", GitBranch],
+          ["system", "System diagram", "Connect the pieces", Network],
+          ["brainstorm", "Brainstorming", "Explore an idea", Lightbulb],
+        ] as const).map(([kind, title, description, Icon]) => (
+          <button className="starter-card" key={kind} onClick={() => insertStarter(kind)}>
+            <Icon size={24} aria-hidden="true" />
+            <strong>{title}</strong><span>{description}</span>
+          </button>
+        ))}
+      </div>
       <div className="sub">
         {touch ? (
           <>

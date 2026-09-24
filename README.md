@@ -72,7 +72,7 @@ Requires Node.js 22.13+ (the server uses the built-in `node:sqlite`).
 docker compose up -d --build
 ```
 
-The app and API are served on port 5191, with all state in the `lakar-data` volume. Put your reverse proxy (Caddy, nginx, Traefik) in front of it with HTTPS — the app requires a secure context for WebCrypto (localhost works without TLS). Live collaboration needs the proxy to pass WebSocket upgrades through to `/ws`; Caddy's `reverse_proxy` does this by default.
+The app and API are bound to host loopback on port 5191, with all state in the `lakar-data` volume. Put your reverse proxy (Caddy, nginx, Traefik) in front of it with HTTPS — the app requires a secure context for WebCrypto (localhost works without TLS). Live collaboration needs the proxy to pass WebSocket upgrades through to `/ws`; Caddy's `reverse_proxy` does this by default.
 
 Caddy example:
 
@@ -97,7 +97,7 @@ Environment variables:
 | `PORT` | `5191` | HTTP port |
 | `DATA_DIR` | `./data` | SQLite database + token secret location |
 | `TOKEN_SECRET` | auto-generated | HMAC secret for session tokens |
-| `TRUST_PROXY` | off | set `1` behind a reverse proxy so rate limiting sees real IPs |
+| `TRUST_PROXY` | off | comma-separated trusted proxy IPs/CIDRs; `1` trusts loopback only |
 | `LAKAR_ORIGIN` | from request | the exact origin passkeys are bound to, e.g. `https://draw.example.com` |
 | `LAKAR_RP_ID` | host of origin | WebAuthn relying-party id; defaults to the origin's hostname |
 | `LAKAR_INVITES` | off | set `required` to close sign-ups behind invite codes |
@@ -150,6 +150,7 @@ Scene sync uses per-scene version numbers. If two devices edit the same scene, t
 - Passkeys need an authenticator that supports the WebAuthn `prf` extension. Ones that don't are refused at setup with an explanation rather than registered as a passkey that cannot unlock anything.
 - Passkey attestation is not requested or verified, so the server learns nothing about which authenticator you use — and equally cannot tell a hardware key from a software one. Registration instead requires a live signature proving the credential holds its own private key.
 - The WebAuthn signature counter is read but not enforced. Enforcing it would detect a cloned hardware key, but synced passkeys routinely report zero or non-monotonic counters, and the false lockouts would cost more than the detection is worth here.
+- Forwarded client IPs are ignored by default. Set `TRUST_PROXY` to the exact proxy address or CIDR as seen by the server; `1` trusts loopback only. With Docker, a host proxy may appear as the bridge gateway, so configure that specific address. Do not expose the backend port publicly or trust all addresses. The proxy must overwrite client-supplied forwarding headers.
 - Behind a reverse proxy, set `LAKAR_ORIGIN` (e.g. `https://draw.example.com`) so passkey assertions are checked against the right origin instead of one inferred from forwarded headers.
 - The server serves the app's JavaScript, which is the ceiling on any in-browser E2EE: a malicious server could ship a build that leaks your key. Self-hosting is what makes that acceptable — you are the server.
 

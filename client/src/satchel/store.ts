@@ -11,7 +11,7 @@ import { randomSeed } from "../math";
 import { expandWithBoundTexts } from "../boundText";
 import { history } from "../history";
 import { viewportCenter } from "../interaction/actions";
-import { api } from "../sync/api";
+import { api, ApiError } from "../sync/api";
 import { syncManager } from "../sync/manager";
 import { loadSatchelItems, saveSatchelItems } from "../sync/local";
 import { downloadBlob } from "../export/image";
@@ -73,59 +73,103 @@ const isStoredItem = (value: unknown): value is StoredItem => {
   );
 };
 
+interface SatchelCache {
+  items: StoredItem[];
+  owner: string | null;
+  writes: [string, "create" | "update"][];
+  deletes: string[];
+}
+
 class Satchel {
   private syncing = false;
+  private generation = 0;
+  private writes = new Map<string, "create" | "update">();
+  private deletes = new Set<string>();
+  private retryTimer: number | null = null;
+  private owner: string | null = null;
 
   async init() {
-    const stored = (await loadSatchelItems<StoredItem[]>()) ?? [];
-    const local = stored.filter(isStoredItem).map(fromStored);
-    useStore.getState().setSatchelItems(local);
+    const generation = ++this.generation;
+    if (this.retryTimer) window.clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    const owner = useStore.getState().user?.email ?? null;
+    const stored = await loadSatchelItems<StoredItem[] | SatchelCache>();
+    if (generation !== this.generation) return;
+    const legacy = Array.isArray(stored);
+    const sameOwner = legacy || !stored?.owner || stored.owner === owner;
+    const items = sameOwner ? (legacy ? stored : stored?.items ?? []) : [];
+    this.owner = owner;
+    this.writes = new Map(sameOwner && !legacy ? stored?.writes ?? [] : []);
+    this.deletes = new Set(sameOwner && !legacy ? stored?.deletes ?? [] : []);
+    if (legacy && !owner) for (const item of items) this.writes.set(item.id, "create");
+    useStore.getState().setSatchelItems(items.filter(isStoredItem).map(fromStored));
     if (syncManager.isSignedIn()) void this.pullRemote();
+  }
+
+  private scheduleRetry() {
+    if (this.retryTimer || !syncManager.isSignedIn()) return;
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = null;
+      void this.pullRemote();
+    }, 15_000);
   }
 
   async pullRemote() {
     if (this.syncing || !syncManager.isSignedIn()) return;
     this.syncing = true;
+    const generation = this.generation;
+    const valid = () => generation === this.generation && this.owner === (useStore.getState().user?.email ?? null);
     try {
+      for (const id of this.deletes) {
+        await api.deleteSatchelItem(id);
+        if (!valid()) return;
+        this.deletes.delete(id);
+        await this.persistLocal(useStore.getState().satchelItems);
+      }
+      for (const [id, kind] of this.writes) {
+        const item = useStore.getState().satchelItems.find((it) => it.id === id);
+        if (!item) { this.writes.delete(id); continue; }
+        const encData = await syncManager.encryptForUser(id, toStored(item));
+        if (!encData || !valid()) return;
+        try {
+          if (kind === "create") await api.createSatchelItem(id, encData);
+          else await api.updateSatchelItem(id, encData);
+        } catch (err) {
+          if (kind === "create" && err instanceof ApiError && err.status === 409) {
+            await api.updateSatchelItem(id, encData);
+          } else if (!(kind === "update" && err instanceof ApiError && err.status === 404)) throw err;
+        }
+        if (!valid()) return;
+        if (useStore.getState().satchelItems.find((it) => it.id === id) === item) this.writes.delete(id);
+        await this.persistLocal(useStore.getState().satchelItems);
+      }
       const { items } = await api.listSatchel();
       const remote: SatchelItem[] = [];
       for (const row of items) {
         const decoded = await syncManager.decryptForUser<StoredItem>(row.id, row.encData);
-        if (decoded && isStoredItem(decoded)) {
+        if (!valid()) return;
+        if (decoded && isStoredItem(decoded) && !this.deletes.has(row.id)) {
           remote.push({ ...fromStored(decoded), id: row.id, createdAt: row.createdAt });
         }
       }
-      const local = useStore.getState().satchelItems;
-      const remoteIds = new Set(remote.map((item) => item.id));
-      const merged = [...remote];
-      for (const item of local) {
-        if (!remoteIds.has(item.id)) {
-          merged.push(item);
-          void this.pushOne(item);
-        }
+      if (!valid()) return;
+      const merged = new Map(remote.map((item) => [item.id, item]));
+      for (const item of useStore.getState().satchelItems) {
+        if (this.writes.has(item.id) && !this.deletes.has(item.id)) merged.set(item.id, item);
       }
-      merged.sort((a, b) => a.createdAt - b.createdAt);
-      useStore.getState().setSatchelItems(merged);
-      await this.persistLocal(merged);
+      const next = [...merged.values()].sort((a, b) => a.createdAt - b.createdAt);
+      useStore.getState().setSatchelItems(next);
+      await this.persistLocal(next);
     } catch {
-      void 0;
+      if (valid()) this.scheduleRetry();
     } finally {
       this.syncing = false;
+      if (!valid() || this.writes.size || this.deletes.size) this.scheduleRetry();
     }
   }
 
   private async persistLocal(items: SatchelItem[]) {
-    await saveSatchelItems(items.map(toStored));
-  }
-
-  private async pushOne(item: SatchelItem) {
-    if (!syncManager.isSignedIn()) return;
-    try {
-      const encData = await syncManager.encryptForUser(item.id, toStored(item));
-      if (encData) await api.createSatchelItem(item.id, encData);
-    } catch {
-      void 0;
-    }
+    await saveSatchelItems({ items: items.map(toStored), owner: this.owner, writes: [...this.writes], deletes: [...this.deletes] } satisfies SatchelCache);
   }
 
   canAddSelection() {
@@ -171,8 +215,9 @@ class Satchel {
     };
     const next = [...s.satchelItems, item];
     s.setSatchelItems(next);
+    this.writes.set(item.id, "create");
     await this.persistLocal(next);
-    void this.pushOne(item);
+    void this.pullRemote();
     return item;
   }
 
@@ -183,29 +228,19 @@ class Satchel {
     const renamed = { ...target, name: name.trim() || target.name };
     const next = s.satchelItems.map((item) => (item.id === id ? renamed : item));
     s.setSatchelItems(next);
+    this.writes.set(id, this.writes.get(id) ?? "update");
     await this.persistLocal(next);
-    if (syncManager.isSignedIn()) {
-      try {
-        await api.deleteSatchelItem(id);
-      } catch {
-        void 0;
-      }
-      void this.pushOne(renamed);
-    }
+    void this.pullRemote();
   }
 
   async remove(id: string) {
     const s = useStore.getState();
     const next = s.satchelItems.filter((item) => item.id !== id);
     s.setSatchelItems(next);
+    this.writes.delete(id);
+    this.deletes.add(id);
     await this.persistLocal(next);
-    if (syncManager.isSignedIn()) {
-      try {
-        await api.deleteSatchelItem(id);
-      } catch {
-        void 0;
-      }
-    }
+    void this.pullRemote();
   }
 
   place(item: SatchelItem, target: Point | null): LakarElement[] {
@@ -286,8 +321,9 @@ class Satchel {
     if (!incoming.length) return 0;
     const next = [...s.satchelItems, ...incoming];
     s.setSatchelItems(next);
+    for (const item of incoming) this.writes.set(item.id, "create");
     await this.persistLocal(next);
-    for (const item of incoming) void this.pushOne(item);
+    void this.pullRemote();
     return incoming.length;
   }
 }
